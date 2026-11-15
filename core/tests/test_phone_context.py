@@ -219,3 +219,29 @@ def test_near_dial_holds_when_the_phone_goes_quiet_but_last_said_plugged_in():
     assert PC.bedside_side(st, PC.latest(st, "p1"), t + 4 * 3600) is None           # but not forever
     PC.update(st, "p1", {"charging": False}, t + 100 * 60)
     assert PC.bedside_side(st, PC.latest(st, "p1"), t + 101 * 60) is None           # unplugged when it did report
+
+
+def test_a_phone_picked_up_after_a_bedside_scan_stops_vouching_but_doesnt_say_up(tmp_path, monkeypatch):
+    # 2026-11-14: set down by the bed at 23:41 (screen off, one strong scan), picked up and carried around; that scan
+    # kept saying "in" until 00:01 while the dog lay on that side
+    nogap(monkeypatch)
+    with make(tmp_path) as c:
+        k = ctl(c)
+        t0 = k.clock.now_ts()
+        k.clock.jump_to(t0)
+        assert post(c, charging=False, wifi_home=True, dials=[{"minor": 1, "rssi": -48}],
+                    sharing=["wifi", "charging", "dial"]).status_code == 200
+        st = lambda t: PC.bedside_state(k.store, PC.latest(k.store, "p1"), "left", t)   # noqa: E731
+        assert st(t0 + 2 * 60) == "in"
+        # lying there unplugged between scans (the phone scans every 15 min): still "in", no flapping to "up"
+        assert st(t0 + 12 * 60) == "in"
+        # it checks in again without a scan (screen on: picked up): no longer "in", and not "up" either
+        k.clock.jump_to(t0 + 13 * 60)
+        assert post(c, charging=False, wifi_home=True).status_code == 200
+        assert st(t0 + 13 * 60 + 30) is None
+        # the scan is old news after SIGHTING_S: the usual rule (home, unplugged, dial not heard lately) says "up"
+        assert st(t0 + 25 * 60) == "out"
+        # charging by the dial: the bedside_side() path, unchanged
+        k.clock.jump_to(t0 + 30 * 60)
+        assert post(c, charging=True, wifi_home=True, dials=[{"minor": 1, "rssi": -48}]).status_code == 200
+        assert st(t0 + 45 * 60) == "in"

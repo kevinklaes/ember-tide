@@ -10,6 +10,8 @@ minor versions, and each entry says what to check when upgrading.
   doesn't show a false "0 min to drift off" or start the night late.
 - **"Night screen by default" applies right away.** Turning it on or off now changes Tonight straight away, even if
   the screen was already open; before, it could need a trip away and back. A night screen you opened yourself stays open.
+- **A phone picked up from the bedside stops vouching for you.** One scan of your side's dial no longer counts as you
+  being in bed for the next 20 minutes once the phone has been picked up and used since.
 ## 0.1.14
 
 - **The Sleep summary follows "Which to trust more".** When you lean on your watch (the default), the night's story uses

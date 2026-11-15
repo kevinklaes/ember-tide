@@ -216,15 +216,18 @@ def _near_side(store, seen: list, ts: float, now: float) -> str | None:
 
 
 PHONE_FRESH_S = 20 * 60        # the phone must have checked in this recently to say anything about where its owner is
+SCAN_RECHECK_S = 90            # a report this long after the dial scan, with no new scan: the phone was picked up since
 
 
 def bedside_state(store, cur: dict | None, zone: str, now: float) -> str | None:
     """Supporting evidence for "is it them on `zone`?" (pets.py), never enough alone:
-    - "in":  the phone lies by that side's dial (on the charger or in bedtime mode), or a fresh scan heard that dial
-             strongly (NEAR_RSSI or better);
+    - "in":  the phone lies by that side's dial (on the charger or in bedtime mode), or a scan in the last SIGHTING_S
+             heard that dial strongly (NEAR_RSSI or better) and the phone hasn't checked in since without scanning;
     - "out": a fresh phone on the home Wi-Fi, NOT charging, and that side's dial not heard lately or only weakly
              (−83 dBm from across the room counts as not at the bedside);
-    - None:  anything else, or a phone that hasn't checked in for PHONE_FRESH_S (stale is unknown, never evidence)."""
+    - None:  anything else: a phone heard right by the dial lately but picked up since (it checked in again without a
+             scan, so the screen was on: in bed or walking around, it can't tell), or a phone that hasn't checked in
+             for PHONE_FRESH_S (stale is unknown, never evidence)."""
     if not cur or not cur.get("seen") or now - float(cur["seen"]) > PHONE_FRESH_S:
         return None
     if bedside_side(store, cur, now) == zone:
@@ -234,6 +237,11 @@ def bedside_state(store, cur: dict | None, zone: str, now: float) -> str | None:
     own = [float(d.get("rssi", -999)) for d in (cur.get("data") or {}).get("dials") or []
            if int(d.get("minor", -1)) in minors and ts is not None and now - float(d.get("seen_at") or ts) <= SIGHTING_S]
     if own and max(own) >= NEAR_RSSI:
+        # The phone only scans with the screen off (or charging / in bedtime mode). If it has checked in again since
+        # without a scan, it was picked up: it no longer vouches for the bedside, and it doesn't say "up" either
+        # (2026-11-14: set down by the bed at 23:41, picked up, and that one scan kept saying "in" until 00:01)
+        if float(cur["seen"]) - float(ts) > SCAN_RECHECK_S:
+            return None
         return "in"
     if fresh(cur, "wifi_home", "wifi", now) is True and fresh(cur, "charging", "charging", now) is False:
         return "out"
