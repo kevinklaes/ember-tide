@@ -68,9 +68,14 @@ def connect(c, prov: str, fake: Fake, pid="p2"):
 def test_providers_list_and_owner_only_credentials(tmp_path):
     with client(tmp_path, auth=True) as c:
         c.post("/api/auth/setup", json={"username": "alex", "password": PW, "person": "p1"})
-        lst = {p["id"]: p for p in c.get("/api/cloud/providers").json()["providers"]}
+        raw = c.get("/api/cloud/providers").json()["providers"]
+        lst = {p["id"]: p for p in raw}
         assert {"oura", "withings", "whoop", "polar"} <= {k for k, v in lst.items() if v["available"]}
-        assert not lst["garmin"]["available"] and "partner" in lst["garmin"]["why"]
+        g = lst["garmin"]
+        assert g["available"] and g["configured"] and g["connect"] == "key" and "why" not in g
+        assert "scopes" not in g and "redirect_uri" not in g and g["name"] == "Garmin"
+        assert [x["id"] for x in raw if not x["available"]] == ["fitbit", "samsung", "apple"]
+        assert all(lst[k]["connect"] == "signin" for k in ("oura", "withings", "whoop", "polar"))
         assert lst["oura"]["redirect_uri"] == "https://bed.example.org/api/oura/callback"
         assert lst["withings"]["redirect_uri"] == "https://bed.example.org/api/cloud/withings/callback"
         c.put("/api/integrations/cloud/whoop", json={"client_id": "cid_test", "client_secret": "sec_test"}, headers=H)

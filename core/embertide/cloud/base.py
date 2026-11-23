@@ -12,6 +12,9 @@ Everything else is shared here:
 - storage through the ordinary wearable import (`_import_wearable`, device = the provider's name, platform "server"),
   so clock alignment and the cross-device duplicate rule apply, plus sleep stages through `put_stages`; nights the
   heart rate touched are re-checked by Autopilot in hindsight.
+
+A provider can also connect by a key the person pastes (`garmin.py`, `connect_kind = "key"`), with no owner
+credentials and no redirect.
 """
 
 from __future__ import annotations
@@ -69,6 +72,7 @@ class CloudConnector:
     gives = ""                           # plain words for the UI: "sleep stages, heart rate, ..."
     docs_url = ""
     callback_path: str | None = None     # default /api/cloud/<id>/callback
+    connect_kind = "signin"              # "signin": the maker's sign-in page (OAuth); "key": a pasted key (Garmin)
 
     def __init__(self, controller, client: httpx.AsyncClient | None = None) -> None:
         self.c = controller
@@ -105,9 +109,17 @@ class CloudConnector:
     def status(self, pid: str) -> dict:
         t = self.token(pid) or {}
         st = self.store.get(self.k("status", pid), {}) or {}
-        return {"available": self.configured, "connected": bool(t.get("access_token")), "needs_reconnect": bool(st.get("needs_reconnect")),
+        return {"available": self.configured, "connected": self.connected(pid), "needs_reconnect": bool(st.get("needs_reconnect")),
                 "connected_at": t.get("connected_at"), "last_sync": st.get("last_sync"), "last_error": st.get("last_error"),
                 "last_stored": st.get("last_stored")}
+
+    def connected(self, pid: str) -> bool:
+        return bool((self.token(pid) or {}).get("access_token"))
+
+    @property
+    def reconnect_text(self) -> str:
+        """What the person reads when the connection is gone and they must connect again."""
+        return f"{self.name}'s sign-in ran out. Connect again."
 
     def _status(self, pid: str, **kv) -> None:
         st = self.store.get(self.k("status", pid), {}) or {}
@@ -264,7 +276,7 @@ class CloudConnector:
             if e.status == 429:
                 self._status(pid, last_error=f"{self.name} is busy; trying again later.", backoff_until=now + (e.retry_after or 900))
             elif e.status == 401:
-                self._status(pid, last_error=f"{self.name}'s sign-in ran out. Connect again.", needs_reconnect=True)
+                self._status(pid, last_error=self.reconnect_text, needs_reconnect=True)
             else:
                 self._status(pid, last_error=str(e))
             raise
@@ -279,7 +291,7 @@ class CloudConnector:
     # ---------- polling ----------
     def due(self, pid: str, now: float) -> bool:
         """After waking (once), then hourly; never during the night or while backing off."""
-        if not (self.token(pid) or {}).get("access_token"):
+        if not self.connected(pid):
             return False
         st = self.store.get(self.k("status", pid), {}) or {}
         if st.get("needs_reconnect") or now < (st.get("backoff_until") or 0):

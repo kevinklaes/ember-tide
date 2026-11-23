@@ -21,6 +21,12 @@ class AppBody(BaseModel):
 
 class MeBody(BaseModel):
     person: str | None = None
+    key: str | None = Field(None, max_length=4096)              # a key provider's key (Garmin); checked by the provider
+    expires: str | None = Field(None, max_length=20)            # the date that key runs out, YYYY-MM-DD, optional
+
+
+KEY_REFUSED = "Garmin didn't accept that key. Check that all of it was copied, or make a new one at Garmin Connect."
+NOTHING_TO_SET_UP = "Garmin needs nothing from the owner: each person pastes their own key in Settings → Watch or ring."
 
 
 def build_cloud_router(state) -> APIRouter:
@@ -46,6 +52,12 @@ def build_cloud_router(state) -> APIRouter:
             raise HTTPException(403, "This account isn't linked to a side of the bed.")
         return pid
 
+    def _background(coro) -> None:
+        """The first look after connecting runs on its own; a failure waits for the hourly poll."""
+        task = asyncio.get_running_loop().create_task(_quiet(coro))
+        state.__dict__.setdefault("_bg", set()).add(task)
+        task.add_done_callback(state._bg.discard)
+
     def people() -> list[str]:
         return [p.id for p in state.controller.household.people]
 
@@ -55,9 +67,11 @@ def build_cloud_router(state) -> APIRouter:
         """Providers with configured/connected status (Studio → Integrations, the Wearables tile, setup)."""
         out = []
         for p in cloud().providers.values():
-            out.append({"id": p.id, "name": p.name, "gives": p.gives, "docs_url": p.docs_url, "scopes": p.scopes,
-                        "redirect_uri": base(request) + p.redirect_path(), "configured": p.configured,
-                        "connected": {pid: p.status(pid)["connected"] for pid in people()}, "available": True})
+            e = {"id": p.id, "name": p.name, "gives": p.gives, "docs_url": p.docs_url, "connect": p.connect_kind}
+            if p.connect_kind == "signin":                   # a key provider has no address or scopes to copy
+                e.update(scopes=p.scopes, redirect_uri=base(request) + p.redirect_path())
+            out.append({**e, "configured": p.configured, "connected": {pid: p.status(pid)["connected"] for pid in people()},
+                        "available": True})
         out += [{**x, "available": False, "configured": False, "connected": {}} for x in NOT_AVAILABLE]
         return {"providers": out}
 
@@ -65,6 +79,8 @@ def build_cloud_router(state) -> APIRouter:
     @r.get("/integrations/cloud/{provider}")
     async def get_app(provider: str, request: Request):
         p = prov(provider)
+        if p.connect_kind == "key":
+            return {"id": p.id, "configured": True, "connect": "key", "note": NOTHING_TO_SET_UP}
         a = p.app
         return {"id": p.id, "configured": p.configured, "client_id": a.get("client_id", ""), "secret_saved": bool(a.get("client_secret")),
                 "redirect_uri": base(request) + p.redirect_path()}
@@ -72,6 +88,8 @@ def build_cloud_router(state) -> APIRouter:
     @r.put("/integrations/cloud/{provider}")
     async def put_app(provider: str, b: AppBody, request: Request):
         p = prov(provider)
+        if p.connect_kind == "key":
+            raise HTTPException(409, NOTHING_TO_SET_UP)
         cid = b.client_id.strip()
         if cid and not re.fullmatch(r"[A-Za-z0-9_\-.]{4,200}", cid):
             raise HTTPException(422, f"That doesn't look like a {p.name} client id.")
@@ -88,6 +106,16 @@ def build_cloud_router(state) -> APIRouter:
     @r.post("/cloud/me/{provider}/connect")
     async def connect(provider: str, b: MeBody, request: Request):
         p = prov(provider)
+        if p.connect_kind == "key":
+            pid = me(request, b.person)
+            try:
+                await p.connect_key(pid, b.key, b.expires)
+            except CloudError as e:
+                if e.status in (422, 429):
+                    raise HTTPException(e.status, str(e))
+                raise HTTPException(400 if e.status == 401 else 502, KEY_REFUSED if e.status == 401 else str(e))
+            _background(p.sync(pid))
+            return p.status(pid)
         try:
             return {"url": p.authorize_url(me(request, b.person), base(request) + p.redirect_path())}
         except CloudError as e:
@@ -112,6 +140,8 @@ def build_cloud_router(state) -> APIRouter:
     @r.get("/cloud/{provider}/callback")
     async def callback(provider: str, request: Request, code: str | None = None, error: str | None = None):
         p = prov(provider)
+        if p.connect_kind != "signin":
+            raise HTTPException(404, "unknown provider")
         st = p.take_state(request.query_params.get("state") or "")
         if error:
             return _page(f"{p.name} wasn't connected", "Nothing was shared. You can try again from Settings whenever you like.", False)
@@ -121,9 +151,7 @@ def build_cloud_router(state) -> APIRouter:
             await p.finish(code, st)
         except CloudError:
             return _page(f"{p.name} wasn't connected", f"{p.name} didn't accept the sign-in. Try again from Settings in a minute.", False)
-        task = asyncio.get_running_loop().create_task(_quiet(p.sync(st["pid"])))
-        state.__dict__.setdefault("_bg", set()).add(task)
-        task.add_done_callback(state._bg.discard)
+        _background(p.sync(st["pid"]))
         return _page(f"{p.name} is connected", "New nights will show up within the hour. You can close this and go back to the app.", True)
 
     # ---------- owner: webhooks and JSON pollers ----------

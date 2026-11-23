@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from .base import CHECK_EVERY_S, CloudConnector, CloudError
+from .garmin import Garmin
 from .generic import Generic
 from .oura import Oura
 from .polar import Polar
@@ -13,12 +14,11 @@ from .whoop import Whoop
 from .withings import Withings
 
 log = logging.getLogger(__name__)
-PROVIDERS: list[type[CloudConnector]] = [Oura, Withings, Whoop, Polar]
+PROVIDERS: list[type[CloudConnector]] = [Oura, Withings, Whoop, Polar, Garmin]
 
 # Providers looked at and not built, with why (shown in Studio and docs/integrations.md)
 NOT_AVAILABLE = [
     {"id": "fitbit", "name": "Fitbit / Pixel Watch", "why": "Fitbit's Web API was switched off in November 2026; its successor, the Google Health API, needs Google's app verification for health data. Use Health Connect on Android instead."},
-    {"id": "garmin", "name": "Garmin", "why": "Garmin's Health API is for approved business partners only. Use Health Connect (Android) or Apple Health (iPhone app)."},
     {"id": "samsung", "name": "Samsung Galaxy Watch", "why": "No public cloud API; Samsung Health shares through Health Connect on Android."},
     {"id": "apple", "name": "Apple Watch", "why": "Apple Health has no cloud API; it's read on the iPhone itself (the iPhone app)."},
 ]
