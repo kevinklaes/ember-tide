@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from garmin_fake import HOST, KEY, SLEEP_PATH, TOKEN_PATH, FakeGarmin
+from garmin_fake import HOST, HR_PATH, HRV_PATH, KEY, SLEEP_PATH, TOKEN_PATH, FakeGarmin
 
 from embertide.app import create_app
 from embertide.cloud import NOT_AVAILABLE
@@ -234,7 +234,8 @@ def test_a_401_renews_once(tmp_path):
         fake.revoke_tokens()                                       # 10+ hours left, yet Garmin answers 401
         r = look(c)
         assert r.status_code == 200, r.text
-        assert len(fake.exchanges()) == ex + 1 and len(fake.data_requests()) == data + 2   # one renewal, one retry
+        # one renewal, and one retry on top of a routine look's seven data calls
+        assert len(fake.exchanges()) == ex + 1 and len(fake.data_requests()) == data + 8
         assert not status(c)["needs_reconnect"]
         # two 401s in a row: the key is gone; at most two exchanges in that sync
         fake.always_401 = True
@@ -300,7 +301,9 @@ def test_only_garmins_host(tmp_path):
         assert fake.foreign == []
         assert {urlsplit(str(q.url)).netloc for q in fake.calls} == {HOST}
         assert all(str(q.url).startswith(f"https://{HOST}/") for q in fake.calls)
-        assert {urlsplit(str(q.url)).path for q in fake.calls} == {TOKEN_PATH, SLEEP_PATH}
+        paths = {urlsplit(str(q.url)).path for q in fake.calls}
+        assert {TOKEN_PATH, SLEEP_PATH, HR_PATH} <= paths
+        assert all(x in (TOKEN_PATH, SLEEP_PATH, HR_PATH) or x.startswith(HRV_PATH) for x in paths)
 
 
 def test_demo_refuses_garmin(tmp_path):
@@ -456,6 +459,6 @@ def test_requests_are_paced_one_at_a_time(tmp_path):
         p.pause_s, p._mono, p._sleep, p._last = 0.5, (lambda: 1000.0), nap, 1000.0   # a frozen clock: each call waits
         fake.revoke_tokens()
         n = len(fake.calls)
-        assert look(c).status_code == 200                          # 401, renewal, retry: three requests
-        assert len(fake.calls) - n == 3
-        assert waits == [0.5, 0.5, 0.5]
+        assert look(c).status_code == 200                          # 401, renewal, retry, then six more data calls
+        assert len(fake.calls) - n == 9
+        assert waits == [0.5] * 9

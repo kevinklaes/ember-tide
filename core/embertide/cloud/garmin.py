@@ -21,12 +21,13 @@ import logging
 import math
 import re
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
 
 from .base import UA, CloudConnector, CloudData, CloudError, retry_after
+from .oura import morning
 from .sealed import Sealer, SealError
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,8 @@ log = logging.getLogger(__name__)
 HOST = "https://personal.connectapi.garmin.com"
 TOKEN_PATH = "/personalapitoken-service/personal-api/personal-api-key/token"
 SLEEP_PATH = "/sleep-service/sleep/dailySleepSummariesByDate"
+HR_PATH = "/wellness-service/wellness/dailyHeartRate"
+HRV_PATH = "/hrv-service/hrv/"                       # + the calendar date
 RENEW_BEFORE_S = 3600
 KEY_MAX = 1024
 TOKEN_MAX = 8192
@@ -291,10 +294,63 @@ class Garmin(CloudConnector):
             return None
 
     async def fetch(self, pid: str, start: date, end: date, now: float) -> CloudData:
-        """Connection half only: one sleep call for the window, nothing stored yet. The data work item fills this."""
-        today = datetime.fromtimestamp(now, self.c.clock.tz).date()
-        await self._get(pid, SLEEP_PATH, {"startDate": start.isoformat(), "endDate": min(end, today).isoformat()})
-        return CloudData()
+        """D11: one sleep call for the window, then one heart-rate and one HRV call per day from the window's start to
+        today (the day after today that `_sync()` adds is not asked for). A 429 or a dead key raises at once, so no
+        further call is made. A refused heart-rate or HRV call (400/403) skips that kind for the rest of this sync
+        (D13). Each answer is parsed on its own: one that can't be read is skipped and logged by exception type only."""
+        tz = self.c.clock.tz
+        today = datetime.fromtimestamp(now, tz).date()
+        last = min(end, today)
+        out = CloudData()
+        nights: dict[str, dict] = {}                       # calendar date -> that date's night period
+        body = await self._get(pid, SLEEP_PATH, {"startDate": start.isoformat(), "endDate": last.isoformat()})
+        for s in sleep_rows(body):
+            try:
+                n = night(s)
+                if n is not None:
+                    out.periods.append(n)
+                    nights[_night_date(s, n["end"], tz)] = n
+                    for metric, v in night_numbers(s).items():
+                        out.add(metric, n["end"], v)       # the night's own numbers, stamped at its end
+                naps = s.get("dailyNapDTOS")
+                for x in naps if isinstance(naps, list) else []:     # read even when the night isn't usable
+                    p = nap(x)
+                    if p is not None:
+                        out.periods.append(p)
+            except Exception as e:  # noqa: BLE001  (one unreadable sleep is skipped, the rest is kept)
+                log.info("garmin: a sleep was skipped (%s)", type(e).__name__)
+        refused: set[str] = set()
+        d = start
+        while d <= last:
+            day = d.isoformat()
+            for kind in ("heart rate", "hrv"):
+                if kind in refused:
+                    continue
+                if kind == "hrv":
+                    body = await self._get(pid, HRV_PATH + day, soft=True)
+                else:
+                    body = await self._get(pid, HR_PATH, {"date": day}, soft=True)
+                if body is SKIP:
+                    refused.add(kind)
+                    continue
+                try:
+                    if kind == "hrv":
+                        pts, avg = hrv(body)
+                        for t, v in pts:
+                            out.add("hrv", t, v)
+                        if avg is not None and day in nights:
+                            nights[day]["hrv_avg"] = avg
+                    else:
+                        pts, rest = heart(body)
+                        for t, v in pts:
+                            out.add("hr", t, v)
+                        t = rest_stamp(day, nights, today, tz)
+                        if rest is not None and t is not None:
+                            out.add("resting_hr", t, rest)
+                except Exception as e:  # noqa: BLE001
+                    log.info("garmin: a day's %s was skipped (%s)", kind, type(e).__name__)
+            d += timedelta(days=1)
+        return out
 
     async def sync(self, pid: str, days: int | None = None) -> dict:
         if self._backing_off(pid):
@@ -322,3 +378,170 @@ class Garmin(CloudConnector):
                 until = None
         out.update(connect="key", key_expires=until or None, key_expires_soon=soon)
         return out
+
+
+# ---------- parsers: plain values in, never an exception out ----------
+T_MIN, T_MAX = 1e8, 1e11                    # seconds: 1973 to 5138; anything else isn't a time
+_DIGITS = re.compile(r"^\d{1,17}$")
+
+
+def gts(v: object) -> float | None:
+    """Epoch seconds from epoch milliseconds (above 1e11), epoch seconds (above 1e8), digits as text, or ISO text.
+    Text without an offset is UTC (Garmin's GMT fields carry none), never the server's local time."""
+    if isinstance(v, str):
+        v = v.strip()
+        if _DIGITS.match(v):
+            return gts(int(v))
+        if not 0 < len(v) <= 64:
+            return None
+        try:
+            d = datetime.fromisoformat(v[:-1] + "+00:00" if v[-1:] in ("Z", "z") else v)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            t = d.timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+        return t if T_MIN < t < T_MAX else None
+    t = _num(v)
+    if t is None:
+        return None
+    if t > T_MAX:
+        t /= 1000.0
+    return t if T_MIN < t < T_MAX else None
+
+
+def _in(v: object, lo: float, hi: float) -> float | None:
+    n = _num(v)
+    return n if n is not None and lo <= n <= hi else None
+
+
+def _mins(v: object) -> int | None:
+    n = _num(v)
+    return round(n / 60) if n is not None and 0 <= n <= 86400 * 2 else None
+
+
+def _obj(v: object) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def sleep_rows(body: object) -> list[dict]:
+    """The sleeps in an answer: a list of objects, one object, or objects wrapping one under `dailySleepDTO`."""
+    rows = body if isinstance(body, list) else [body] if isinstance(body, dict) and body else []
+    out = []
+    for r in rows:
+        if isinstance(r, dict) and isinstance(r.get("dailySleepDTO"), dict):
+            r = r["dailySleepDTO"]
+        if isinstance(r, dict) and r:
+            out.append(r)
+    return out
+
+
+def _sid(v: object) -> str | None:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float) and math.isfinite(v) and v == int(v):
+        return str(int(v))
+    return v if visible(v, 64) else None
+
+
+def _period(kind: str, pid: str, t0: float, t1: float) -> dict:
+    return {"id": f"garmin:{pid}", "source": "garmin", "device": "Garmin", "kind": kind, "start": t0, "end": t1,
+            "asleep_min": None, "deep_min": None, "rem_min": None, "light_min": None, "awake_min": None,
+            "efficiency": None, "latency_min": None, "hr_avg": None, "hr_low": None, "hrv_avg": None, "breath": None,
+            "segments": []}
+
+
+def night(s: object) -> dict | None:
+    """A night's sleep (engine/sleeps.py shape) with the minutes in each stage, or None without a usable start and
+    end. Garmin gives no stage timeline, so `segments` stays empty (D12)."""
+    s = _obj(s)
+    t0, t1 = gts(s.get("sleepStartTimestampGMT")), gts(s.get("sleepEndTimestampGMT"))
+    if t0 is None or t1 is None or t1 <= t0:
+        return None
+    x = _period("night", _sid(s.get("id")) or str(int(t0)), t0, t1)
+    x.update(asleep_min=_mins(s.get("sleepTimeSeconds")), deep_min=_mins(s.get("deepSleepSeconds")),
+             light_min=_mins(s.get("lightSleepSeconds")), rem_min=_mins(s.get("remSleepSeconds")),
+             awake_min=_mins(s.get("awakeSleepSeconds")), hr_avg=_in(s.get("avgHeartRate"), 20, 250),
+             breath=_in(s.get("averageRespirationValue"), 4, 40))
+    return x
+
+
+def nap(n: object) -> dict | None:
+    n = _obj(n)
+    t0, t1 = gts(n.get("napStartTimestampGMT")), gts(n.get("napEndTimestampGMT"))
+    if t0 is None or t1 is None or t1 <= t0:
+        return None
+    x = _period("nap", str(int(t0)), t0, t1)
+    x["asleep_min"] = _mins(n.get("napTimeSec"))
+    return x
+
+
+def night_numbers(s: object) -> dict[str, float]:
+    """The sleep score, breathing rate and blood oxygen, each only inside a plausible range."""
+    s = _obj(s)
+    out = {"sleep_score": _in(_obj(_obj(s.get("sleepScores")).get("overall")).get("value"), 0, 100),
+           "night_breath": _in(s.get("averageRespirationValue"), 4, 40),
+           "spo2": _in(s.get("averageSpO2Value"), 50, 100)}
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _night_date(s: dict, end: float, tz) -> str:
+    d = s.get("calendarDate")
+    if isinstance(d, str) and _DATE.match(d):
+        return d
+    return datetime.fromtimestamp(end, tz).date().isoformat()
+
+
+def rest_stamp(day: str, nights: dict[str, dict], today: date, tz) -> float | None:
+    """D14: at that date's night's end; for a past date without one, 07:00 local; for today without one, not yet."""
+    if day in nights:
+        return nights[day]["end"]
+    if day >= today.isoformat():
+        return None
+    return morning(day, tz)
+
+
+def _column(desc: object, word: str, default: int) -> tuple[int, str | None]:
+    for d in desc if isinstance(desc, list) else []:
+        d = _obj(d)
+        k, i = d.get("key"), d.get("index")
+        if isinstance(k, str) and word in k.lower() and isinstance(i, int) and not isinstance(i, bool) and 0 <= i < 64:
+            return i, k
+    return default, None
+
+
+def heart(body: object) -> tuple[list[tuple[float, float]], float | None]:
+    """A day's heart rate: ([(t, bpm)], resting heart rate or None). Columns come from `heartRateValueDescriptors`,
+    else timestamp then value; rows may be lists or objects; values outside 20 to 250 are dropped."""
+    b = _obj(body)
+    ti, tk = _column(b.get("heartRateValueDescriptors"), "time", 0)
+    vi, vk = _column(b.get("heartRateValueDescriptors"), "heart", 1)
+    pts = []
+    rows = b.get("heartRateValues")
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, list):
+            t = gts(r[ti]) if ti < len(r) else None
+            v = _in(r[vi], 20, 250) if vi < len(r) else None
+        elif isinstance(r, dict):
+            t = gts(r.get(tk or "timestamp"))
+            v = _in(r.get(vk or "heartrate", r.get("value")), 20, 250)
+        else:
+            continue
+        if t is not None and v is not None:
+            pts.append((t, v))
+    return pts, _in(b.get("restingHeartRate"), 20, 150)
+
+
+def hrv(body: object) -> tuple[list[tuple[float, float]], float | None]:
+    """A day's HRV: ([(t, ms)], last night's average or None); readings outside 1 to 400 are dropped."""
+    b = _obj(body)
+    pts = []
+    rows = b.get("hrvReadings")
+    for r in rows if isinstance(rows, list) else []:
+        r = _obj(r)
+        t, v = gts(r.get("readingTimeGMT")), _in(r.get("hrvValue"), 1, 400)
+        if t is not None and v is not None:
+            pts.append((t, v))
+    return pts, _in(_obj(b.get("hrvSummary")).get("lastNightAvg"), 1, 400)

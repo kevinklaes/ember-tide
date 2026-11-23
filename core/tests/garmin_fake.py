@@ -17,6 +17,8 @@ import httpx
 HOST = "personal.connectapi.garmin.com"
 TOKEN_PATH = "/personalapitoken-service/personal-api/personal-api-key/token"
 SLEEP_PATH = "/sleep-service/sleep/dailySleepSummariesByDate"
+HR_PATH = "/wellness-service/wellness/dailyHeartRate"
+HRV_PATH = "/hrv-service/hrv/"
 KEY = "k-synthetic-0123456789"
 
 
@@ -40,7 +42,8 @@ def make_token(n: int, life: float | None = 86400, iat: float | None = None, rea
 
 class FakeGarmin:
     """`exchange`: "bare" (default), "json", "jsonstr", "empty", or an HTTP status to answer with.
-    `refused`: keys answered 401. `data`: path -> fn(request) -> Response for data calls (default: an empty list).
+    `refused`: keys answered 401. `data`: path -> fn(request) -> Response for data calls; a key ending in "/" answers
+    every path under it (the HRV calls). Default: an empty list for sleep, 204 for the rest.
     `data_401`: answer this many data calls 401 first. `always_401`: every data call is 401.
     `status_at`: {nth data call (1-based): (status, headers)}."""
 
@@ -100,7 +103,7 @@ class FakeGarmin:
         if self.data_401 > 0:
             self.data_401 -= 1
             return httpx.Response(401)
-        fn = self.data.get(path)
+        fn = self.data.get(path) or next((f for k, f in self.data.items() if k.endswith("/") and path.startswith(k)), None)
         if fn:
             return fn(req)
         return httpx.Response(200, json=[]) if path == SLEEP_PATH else httpx.Response(204)
