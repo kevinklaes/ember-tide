@@ -8,11 +8,14 @@ import Tip from "../components/Tip";
  * Studio → Integrations → Cloud accounts. Self-contained so any Integrations layout can mount it.
  * - Wearable makers' clouds (Oura, Withings, WHOOP, Polar): the owner enters each app's client id and secret once;
  *   people connect their own account from the phone (Settings → Watch or ring, or first-time setup).
+ * - Garmin (connect: "key"): nothing to set up here; each person pastes their own Garmin key on the phone.
  * - Anything else: an inbound webhook (a secret address that takes JSON) or a JSON address polled every N minutes.
  * Server: core/embertide/cloud/, cloud_api.py. Secrets never come back from the server.
  */
 
-export interface Provider { id: string; name: string; gives?: string; docs_url?: string; scopes?: string; redirect_uri?: string; configured: boolean; connected: Record<string, boolean>; available: boolean; why?: string }
+export interface Provider { id: string; name: string; gives?: string; docs_url?: string; scopes?: string; redirect_uri?: string; configured: boolean; connected: Record<string, boolean>; available: boolean; why?: string;
+  /** "key": each person pastes their own key (Garmin), so there is nothing to set up here. */
+  connect?: "signin" | "key" }
 interface Hook { id: string; name: string; person: string; metric: string; items_path: string; value_path: string; time_path: string; unit: string; scale: number; enabled: boolean; url: string; last_ts?: number; last_ok?: boolean; last_error?: string | null; last_stored?: number }
 interface Poll extends Omit<Hook, "url"> { url: string; headers: Record<string, string>; interval_min: number }
 
@@ -32,16 +35,35 @@ export default function CloudAccounts() {
   const avail = list.filter(p => p.available), not = list.filter(p => !p.available);
   return (
     <div id="cloud" className="cloud-accounts" style={{ display: "grid", gap: 12, scrollMarginTop: 16 }}>
-      <Fold id="studio.integrations.cloud" className="box" title="Cloud accounts" keepSummary defaultOpen={!avail.some(p => p.configured)}
+      <Fold id="studio.integrations.cloud" className="box" title="Cloud accounts" keepSummary defaultOpen={!avail.some(p => p.configured && p.connect !== "key")}
         summary={`${avail.filter(p => p.configured).length} of ${avail.length} set up`}>
-        <span className="mute" style={{ fontSize: 13 }}>Data straight from a wearable maker's cloud, for what the phone can't pass on. Set each one up once here; then each person connects their own account from the phone.
+        <span className="mute" style={{ fontSize: 13 }}>Data straight from a wearable maker's cloud, for what the phone can't pass on. Set each one up once here; then each person connects their own account from the phone. Garmin needs nothing here: each person pastes their own Garmin key.
           <Tip label="How it polls" text="After the person wakes (once the device has synced), then every hour; never during the night. Readings that also arrive through Health Connect or Apple Health are stored once." /></span>
-        {avail.map(p => <ProviderRow key={p.id} p={p} onSaved={load} />)}
+        {avail.map(p => p.connect === "key" ? <KeyProviderRow key={p.id} p={p} /> : <ProviderRow key={p.id} p={p} onSaved={load} />)}
         {not.length > 0 && <details><summary className="mute" style={{ fontSize: 13, cursor: "pointer", minHeight: 36 }}>Not available as a cloud account ({not.length})</summary>
           <ul className="mute" style={{ fontSize: 13, paddingLeft: 18, display: "grid", gap: 4 }}>{not.map(p => <li key={p.id}><b style={{ fontWeight: 500 }}>{p.name}</b>: {p.why}</li>)}</ul></details>}
       </Fold>
       <Hooks />
       <Polls />
+    </div>
+  );
+}
+
+/** A provider each person connects with their own key (Garmin): who has connected, what it brings, and no fields. */
+function KeyProviderRow({ p }: { p: Provider }) {
+  const { snap } = useApp();
+  const [open, setOpen] = useState(false);
+  const who = (snap?.people ?? []).map(x => `${x.name}: ${p.connected[x.id] ? "connected" : "not connected"}`).join(" · ");
+  return (
+    <div id={p.id} className="cloud-row" style={{ scrollMarginTop: 16 }}>
+      <button type="button" className="row rowbtn" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span><b style={{ fontWeight: 500 }}>{p.name}</b><br /><small className="mute">{who || "each person connects their own"}</small></span>
+        <span className="mute">{open ? "‹" : "›"}</span>
+      </button>
+      {open && <div style={{ display: "grid", gap: 8, padding: "4px 0 12px" }}>
+        {p.gives && <span className="mute" style={{ fontSize: 13 }}>Brings {p.gives}.</span>}
+        <span className="mute" style={{ fontSize: 13 }}>Nothing to set up here. Each person pastes their own {p.name} key on their phone: Settings → Watch or ring → {p.name}.</span>
+      </div>}
     </div>
   );
 }

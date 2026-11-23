@@ -17,7 +17,8 @@ import HaPicker, { type HaEnt } from "./HaPicker";
 /**
  * The one way to add a device: what it is → how it connects → who it's for → set it up (connection and name) → done.
  * The "+ Add a device" button starts at the first step, a catalog tile at the second. Paths that need nothing
- * here (Health Connect on the phone, the Android app, Oura's cloud) end with plain instructions instead of a form.
+ * here (Health Connect on the phone, the Android app, a maker's cloud) end with plain instructions instead of a form. Garmin's
+ * cloud is connected by each person with their own key, so its guide points to Settings and never to an owner setup.
  */
 
 interface PathInfo { id: PathId; title: string; text: string; soon?: string | false; best?: boolean }
@@ -63,10 +64,12 @@ export default function AddDevice({ start, people, types, sources, sim, say, onD
   const [haShared, setHaShared] = useState<boolean | null>(null);
   const [oura, setOura] = useState<{ configured?: boolean; people?: Record<string, boolean> } | "absent" | null>(null);
   const [cloud, setCloud] = useState<boolean | null>(null);
+  const [providers, setProviders] = useState<{ id: string; connect?: string; connected?: Record<string, boolean> }[]>([]);
   useEffect(() => {
     api.get<{ configured: boolean }>("/api/ha/connection").then(c => setHaShared(c.configured)).catch(() => setHaShared(false));
     api.get<{ configured?: boolean; people?: Record<string, boolean> }>("/api/oura/status").then(setOura).catch(() => setOura("absent"));
-    api.get<unknown>("/api/cloud/providers").then(() => setCloud(true)).catch(() => setCloud(false));   // helper framework, when present
+    api.get<{ providers?: { id: string; connect?: string; connected?: Record<string, boolean> }[] }>("/api/cloud/providers")   // helper framework, when present
+      .then(r => { setCloud(true); setProviders(r?.providers ?? []); }).catch(() => setCloud(false));
   }, []);
   useEffect(() => { document.querySelector(".addflow")?.scrollIntoView({ behavior: "smooth", block: "start" }); }, [step]);
 
@@ -235,7 +238,8 @@ export default function AddDevice({ start, people, types, sources, sim, say, onD
       </div>
       {nav()}</>}
 
-    {step === "setup" && guide && <GuideStep path={path!} brand={brand} person={person} oura={oura} say={say} />}
+    {step === "setup" && guide && <GuideStep path={path!} brand={brand} person={person} oura={oura} say={say}
+      keyProvider={providers.find(p => p.id === brand?.cloudId && p.connect === "key")} />}
     {step === "setup" && guide && nav(<button type="button" className="btn pri" onClick={onDone}>Done</button>)}
 
     {step === "setup" && !guide && type && <>
@@ -294,8 +298,9 @@ export default function AddDevice({ start, people, types, sources, sim, say, onD
 }
 
 /** The end of a path that needs nothing here: what to do on the phone (or in the brand's app), in order. */
-function GuideStep({ path, brand, person, oura, say }: { path: PathId; brand: Brand | null; person?: PersonView;
-  oura: { configured?: boolean; people?: Record<string, boolean> } | "absent" | null; say: (m: string) => void }) {
+function GuideStep({ path, brand, person, oura, say, keyProvider }: { path: PathId; brand: Brand | null; person?: PersonView;
+  oura: { configured?: boolean; people?: Record<string, boolean> } | "absent" | null; say: (m: string) => void;
+  keyProvider?: { id: string; connected?: Record<string, boolean> } }) {
   const whose = person ? `${person.name}'s` : "the";
   if (path === "hc") return <><h2 className="addflow-q">On {whose} Android phone</h2>
     <ol className="guide-steps">
@@ -313,6 +318,19 @@ function GuideStep({ path, brand, person, oura, say }: { path: PathId; brand: Br
     <p className="faint addflow-sub">It then shows here under Phones, with what it shares.</p></>;
   if (path === "webhook") return <><h2 className="addflow-q">Web hook or JSON address</h2>
     <p className="addflow-sub">Set it up in <Link to="/studio/integrations#cloud">Integrations → Cloud accounts</Link>: you get a private address to send readings to, or give one for Ember &amp; Tide to read.</p></>;
+  if (path === "cloud" && keyProvider) {
+    // a maker whose cloud each person connects with their own key (Garmin): nothing for the owner to set up
+    const bn = brand?.name ?? "Garmin";
+    const on = !!(person && keyProvider.connected?.[person.id]);
+    return <><h2 className="addflow-q">{on ? `${person!.name}'s ${bn} is connected` : `Connect ${whose} ${bn}`}</h2>
+      {on ? <p className="addflow-sub">Nights arrive a few times a day after waking. Nothing else to do.</p> : <>
+        <ol className="guide-steps">
+          <li>At {bn} Connect on the web, make a Personal API key and copy it.</li>
+          <li>On {person ? `${person.name}'s` : "your"} phone: <Link to="/settings#watch">Settings → Watch or ring</Link> → {bn}, and paste the key there.</li>
+        </ol>
+        <p className="addflow-sub">Each person uses their own key. It brings sleep, heart rate and HRV after waking, then every hour.</p></>}
+    </>;
+  }
   // cloud (Oura)
   const o = oura && oura !== "absent" ? oura : null;
   const connected = !!(person && o?.people?.[person.id]);

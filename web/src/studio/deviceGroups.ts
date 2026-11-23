@@ -17,7 +17,7 @@ import type { PhoneRow } from "./PhoneRows";
  * "Both of you" only holds things that really are shared (a room sensor, a family calendar, a radar covering the bed).
  */
 
-export interface CloudProvider { id: string; name: string; available: boolean; connected: Record<string, boolean> }
+export interface CloudProvider { id: string; name: string; available: boolean; connected: Record<string, boolean>; connect?: "signin" | "key" }
 
 type DeviceItem =
   | { type: "source"; key: string; s: DevSource }

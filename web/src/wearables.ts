@@ -5,8 +5,9 @@
  * Paths:
  *  - "hc"    Android: the brand's app writes to Health Connect, our Android app reads it (EmberHealth plugin).
  *  - "ah"    iPhone: the brand's app writes to Apple Health, the iPhone app reads it (HealthKit; not released yet).
- *  - "cloud" straight from the brand's cloud, server side (Oura, Withings, WHOOP, Polar). The fallback for data a phone's health
- *            store doesn't carry, or for a phone without our native app (an iPhone using the web app).
+ *  - "cloud" straight from the brand's cloud, server side (Oura, Withings, WHOOP, Polar, and Garmin with the person's
+ *            own key). The fallback for data a phone's health store doesn't carry, or for a phone without our native
+ *            app (an iPhone using the web app).
  *
  * Levels: "yes" = reliably written; "some" = depends on the model, app version or a setting; "no" = not written.
  * From vendor pages and community reports as of late 2026; brands change what they share, so the UI says "usually".
@@ -52,6 +53,8 @@ export const BRANDS: Brand[] = [
   { id: "garmin", name: "Garmin", icon: "△",
     hc: { stages: "yes", hr: "yes", hrv: "no", temp: "no", resp: "some" },
     ah: { stages: "some", hr: "yes", hrv: "no", temp: "no", resp: "some" },
+    // the cloud gives minutes per stage, not a stage timeline, so stages are "no" (Personal API key, cloud/garmin.py)
+    cloud: { stages: "no", hr: "yes", hrv: "yes", temp: "no", resp: "some" }, cloudId: "garmin",
     hcHow: "In Garmin Connect: More → Settings → Connected Apps → Health Connect → turn it on.",
     ahHow: "In Garmin Connect: More → Settings → Connected Apps → Apple Health → turn it on." },
   { id: "whoop", name: "Whoop", icon: "▭",

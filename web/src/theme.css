@@ -1107,6 +1107,18 @@ button.bz-half{cursor:pointer}
 .oura,.webpush{display:grid;gap:8px}
 .oura .btn,.webpush .btn{min-height:50px;font-size:15.5px;justify-self:start;padding:12px 22px}
 .oura .link,.webpush .link{justify-self:start;min-height:40px}
+/* Garmin's key card (screens/KeyConnect.tsx): every control at least 44 px, fields stacked on a phone */
+.keycard{display:grid;gap:10px}
+.keycard .btn{min-height:50px;font-size:15.5px;padding:12px 22px}
+.keycard .pill,.keycard .link{min-height:44px}
+.keycard .link{padding:6px 8px}
+.keycard-acts{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.keycard-steps{margin:0;padding-left:20px;display:grid;gap:6px;font-size:14px}
+.keycard-out{display:inline-flex;align-items:center;min-height:44px;color:var(--acc);text-underline-offset:3px}
+.keycard-fields{display:grid;gap:12px}
+.keycard .field input{min-height:48px}
+.keycard input[type=date]{background:var(--bg);color:var(--text);border:1px solid var(--line2);font:inherit;font-size:16px;padding:12px 14px;border-radius:12px;box-sizing:border-box}
+@media (min-width:640px){.keycard-fields{grid-template-columns:minmax(0,2fr) minmax(0,1fr);align-items:start}}
 .ig{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 .ig li{display:grid;grid-template-columns:52px 1fr;gap:12px;align-items:center;padding:10px 12px;border-radius:var(--r-lg);background:var(--surf);border:1px solid var(--line);font-size:15.5px}
 .ig small{display:block;font-size:13px}
