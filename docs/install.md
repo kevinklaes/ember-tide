@@ -240,7 +240,7 @@ The live view uses a WebSocket (`/api/live`), so a proxy must pass upgrade heade
 3. Open Ember & Tide **from its Home Screen icon**, then More, Settings, Notifications, and turn notifications on for this phone.
 
 This needs iOS 16.4 or newer. Not possible from a web app on iPhone: Apple Health, background location and Bluetooth scanning for the bedside dial.
-Use the bed's own sensors, a cloud wearable account (Oura, Withings, WHOOP, Polar) or a calendar feed instead. For Android, see [android.md](android.md).
+Use the bed's own sensors, a cloud wearable account (Oura, Withings, WHOOP, Polar, Garmin) or a calendar feed instead. For Android, see [android.md](android.md).
 
 **Host it on its own address.** Give Ember & Tide its own (sub)domain or its own port (`sleep.example.com`, or
 `https://home.example.com:8790`). Serving it under a path such as `https://example.com/embertide` is not supported: the web app
@@ -298,6 +298,7 @@ the older one cannot read, so **take a backup before every update.**
 |---|---|
 | `embertide.db` (plus `embertide.db-wal` and `-shm` while running) | all settings, rhythms, nights, accounts, devices |
 | `vapid-private.pem` | the Web Push key. If lost, phones have to turn notifications on again |
+| `cloud-secret.key` | made the first time someone connects Garmin. If lost, they paste their Garmin key again |
 | `fcm-service-account.json` | only if you set up Google push (your own file) |
 
 The easy, safe backup stops the app for a moment:

@@ -57,6 +57,7 @@ kept in a `.env` file next to your Compose file with restricted permissions, whi
 |---|---|---|
 | `embertide.db` (+ `-wal`, `-shm`) | the server | SQLite database: everything. |
 | `vapid-private.pem` | first Web Push use | The server's Web Push key. Keep it private. |
+| `cloud-secret.key` | the first time someone connects Garmin | Encrypts stored cloud keys. Keep it private. If lost, they paste their Garmin key again. |
 | `fcm-service-account.json` | you | Optional Google push credentials. |
 | `traces/trace-YYYY-MM-DD.jsonl` | the server | Presence tuning traces, 14 days. |
 

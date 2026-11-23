@@ -5,6 +5,9 @@ minor versions, and each entry says what to check when upgrading.
 
 ## Unreleased
 
+- **Garmin connects directly.** Each person pastes their own Garmin key (Settings → Watch or ring) and their sleep,
+  heart rate and HRV arrive after waking, then every hour. Nothing for the owner to set up.
+
 ## 0.1.21
 
 The night review opens on the night that just ended. Update the server; the apps need no changes for this one.

@@ -11,16 +11,19 @@ see [Talk to your bed](voice.md).
 
 ## Cloud accounts (`core/embertide/cloud/`)
 
-One module per provider on a shared base (`cloud/base.py`): OAuth2 authorization code with a single-use state,
-tokens kept on the server and refreshed (single-use refresh tokens: the newest is kept), polling once after the
-person wakes and then hourly (never during the night), Retry-After backoff on 429, and a "connect again" state after
-a dead sign-in. The owner enters each provider's client id and secret once in Studio → Integrations → Cloud
-accounts; each person connects their own account from the phone (Settings → Watch or ring, or first-time setup).
+One module per provider on a shared base (`cloud/base.py`): polling once after the person wakes and then hourly
+(never during the night), Retry-After backoff on 429, and a "connect again" state after a dead sign-in. Most providers
+use OAuth2 authorization code with a single-use state, tokens kept on the server and refreshed (single-use refresh
+tokens: the newest is kept), and owner credentials: the owner enters each provider's client id and secret once in
+Studio → Integrations → Cloud accounts. Garmin is different: each person pastes their own Garmin key, and there is
+nothing for the owner to set up. Either way, each person connects their own account from the phone (Settings → Watch
+or ring, or first-time setup).
 
-API: `GET /api/cloud/providers` (everyone; configured/connected per person, plus the not-available list),
-`GET|PUT /api/integrations/cloud/<id>` (owner credentials), `GET /api/cloud/me/<id>`,
-`POST /api/cloud/me/<id>/connect|sync|disconnect`, redirect `GET /api/cloud/<id>/callback` (Oura keeps
-`/api/oura/callback`).
+API: `GET /api/cloud/providers` (everyone; configured/connected per person, plus the not-available list; each
+provider's `connect` field is `"signin"` or `"key"`), `GET|PUT /api/integrations/cloud/<id>` (owner credentials;
+Garmin has none), `GET /api/cloud/me/<id>`, `POST /api/cloud/me/<id>/connect|sync|disconnect` (for a `"key"` provider,
+`connect` takes `{"key": "...", "expires": "YYYY-MM-DD"}`, the date optional, and answers with the person's status
+instead of a sign-in address), redirect `GET /api/cloud/<id>/callback` (Oura keeps `/api/oura/callback`).
 
 Status as researched in November 2026 (check each developer site before relying on it):
 
@@ -31,9 +34,30 @@ Status as researched in November 2026 (check each developer site before relying 
 | WHOOP (Developer API v2) | per-night resting heart rate, HRV (RMSSD), skin temperature, SpO2, breathing rate, recovery score; no minute data or stage timeline | OAuth2; `offline read:sleep read:recovery` | No (any member can create an app) | after the strap syncs and WHOOP scores the sleep | yes |
 | Polar (AccessLink v3) | sleep hypnogram and heart-rate samples, Nightly Recharge HRV / breathing / heart rate | OAuth2 with HTTP Basic client auth; no refresh (long-lived tokens); user registered once after connecting | No (any Polar Flow user can register a client); last 28 days only | after Polar Flow sync | yes |
 | Fitbit / Pixel Watch | — | Fitbit Web API switched off Nov 2026; Google Health API uses Google OAuth | Yes: Google's app verification for health scopes | — | no (use Health Connect) |
-| Garmin (Health API) | — | OAuth | Yes: business partner programme only | — | no (Health Connect / Apple Health) |
+| Garmin (Personal API) | sleep and nap times with minutes per stage, heart rate, HRV, resting heart rate; no stage timeline | Personal API key exchanged for a 24-hour token | No | after the watch syncs to Garmin Connect | yes |
 | Samsung Galaxy Watch | — | no public cloud API | — | — | no (Health Connect) |
 | Apple Watch / Apple Health | — | no cloud API; on-device HealthKit only | — | — | no (iPhone app) |
+
+### Garmin (`cloud/garmin.py`)
+
+Each person makes their own Personal API key in Garmin Connect (https://connect.garmin.com/app/settings/personalApiToken)
+and pastes it in Settings → Watch or ring, with the date it runs out if they want a reminder. The server exchanges the
+key for a token that lasts about 24 hours and asks for a new one with the key when less than an hour is left; a person
+whose key stops working sees "connect again" and pastes a new one. It only pulls: sleep and naps, heart rate, HRV and
+resting heart rate, after waking and then hourly like the other providers. Calls go one at a time to one fixed Garmin
+address, with half a second between them, and the first 429 stops the sync and backs off for Garmin's Retry-After.
+
+The key and the token are stored encrypted (AES-256-GCM, `cloud/sealed.py`) with a key kept in the data folder as
+`cloud-secret.key`. That protects a copy of the database, an export and anything that reads the settings table; it
+does not protect against someone who has the whole data folder, since that holds both. The key and the token never
+appear in an address, a log line, an error or a status. If `cloud-secret.key` is lost, each Garmin person pastes their
+key again.
+
+The sleep, heart-rate and HRV calls were built from Garmin's published API description (captured 2026-11-21) and have
+not yet been checked against a live account (2026-11-22).
+
+Garmin's API brand guidelines (https://developer.garmin.com/brand-guidelines/api-brand-guidelines/) and Garmin's
+Personal API terms apply to each person who makes a key; each person connects only their own account.
 
 ## Generic paths (`cloud/generic.py`, owner only, Studio → Integrations)
 
@@ -92,4 +116,6 @@ Subclass `CloudConnector` in `cloud/<id>.py`: set `id`, `name`, `device`, `auth_
 (`scope_sep`, `token_auth`, `refreshes` if they differ), `gives`, `docs_url`; implement
 `fetch(pid, start, end, now) -> CloudData` (use `self.request()` for calls: it refreshes on a 401 and turns 429/403
 into backoff and messages); add it to `PROVIDERS` in `cloud/__init__.py`, the brand table in `web/src/wearables.ts`
-(`cloudId`), and a fake-service test in `tests/test_cloud.py`.
+(`cloudId`), and a fake-service test in `tests/test_cloud.py`. A provider that connects with a key the person pastes
+instead of a sign-in page sets `connect_kind = "key"` and implements `connect_key()` (see `cloud/garmin.py`); it has no
+owner credentials or callback.
