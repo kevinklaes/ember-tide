@@ -65,7 +65,9 @@ core/                     Python 3.12 · FastAPI · SQLite (one file in the data
     web_push.py           Web Push for the browser / iPhone Home Screen app: VAPID key in the data dir (vapid-private.pem),
                           browser push-service allowlist, payload; sent from notify.py for device kind "web"
     cloud/                cloud accounts (docs/integrations.md): base.py shared OAuth2/refresh/polling/backoff/storage;
-                          oura.py, withings.py, whoop.py, polar.py; generic.py webhooks + JSON pollers; cloud_api.py routes
+                          oura.py, withings.py, whoop.py, polar.py; garmin.py (each person's own key, no OAuth);
+                          sealed.py encrypts stored secrets (cloud-secret.key); generic.py webhooks + JSON pollers;
+                          cloud_api.py routes
     oura_api.py           Oura's own routes (/api/oura/*, callback /api/oura/callback) on the cloud framework
     fcm.py                FCM HTTP v1 sender (service-account JWT → OAuth token)
     ha_bridge.py          Home Assistant MQTT discovery bridge (climate, buttons, sensors, numbers per person)

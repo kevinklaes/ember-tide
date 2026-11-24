@@ -231,7 +231,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             _asyncio.get_running_loop().create_task(run())
         state.controller.review_hook = _review_hook
         state.controller.review_refresh_hook = _refresh_hook
-        from .cloud import CloudAccounts             # cloud accounts (Oura, Withings, WHOOP, Polar) + webhooks / JSON polls
+        from .cloud import CloudAccounts             # cloud accounts (Oura, Withings, WHOOP, Polar, Garmin) + webhooks / JSON polls
         state.cloud = CloudAccounts(state.controller)
         app.state.cloud = state.cloud
         state.oura = app.state.oura = state.cloud.get("oura")

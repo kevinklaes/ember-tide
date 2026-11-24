@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, isApp } from "../api";
+import KeyConnect from "./KeyConnect";
 
-export interface OuraStatus { available: boolean; connected: boolean; needs_reconnect: boolean; connected_at: number | null; last_sync: number | null; last_error: string | null; last_stored?: Record<string, number> | null }
+export interface OuraStatus { available: boolean; connected: boolean; needs_reconnect: boolean; connected_at: number | null; last_sync: number | null; last_error: string | null; last_stored?: Record<string, number> | null;
+  /** Only a key provider (Garmin) sends these: how it connects, and the date the person said the key runs out. */
+  connect?: "signin" | "key"; key_expires?: string | null; key_expires_soon?: boolean }
 
 const ago = (t: number) => {
   const s = Date.now() / 1000 - t;
@@ -13,7 +16,8 @@ export default function OuraConnect({ person, compact = false }: { person: strin
   return <CloudConnect provider="oura" name="Oura" person={person} compact={compact} />;
 }
 
-/** Connect this person's account at a wearable maker (Oura, Withings, WHOOP, Polar) through its cloud. */
+/** Connect this person's account at a wearable maker (Oura, Withings, WHOOP, Polar, Garmin) through its cloud. Garmin connects
+ * by the person's own key (KeyConnect); the others by signing in at the maker. */
 export function CloudConnect({ provider, name, person, compact = false }: { provider: string; name: string; person: string; compact?: boolean }) {
   const [st, setSt] = useState<OuraStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -23,6 +27,7 @@ export function CloudConnect({ provider, name, person, compact = false }: { prov
   // back from Oura's sign-in page (another tab or the in-app browser): look again
   useEffect(() => { const on = () => { if (document.visibilityState === "visible") void load(); }; document.addEventListener("visibilitychange", on); return () => document.removeEventListener("visibilitychange", on); }, [person]);
   if (!st) return null;
+  if (st.connect === "key") return <KeyConnect provider={provider} name={name} person={person} st={st} compact={compact} reload={() => void load()} />;
   const run = async (label: string, f: () => Promise<unknown>) => {
     setBusy(label); setMsg(null);
     try { await f(); } catch (e) { setMsg((e as Error).message); } finally { setBusy(null); void load(); }

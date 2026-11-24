@@ -49,7 +49,7 @@ app version or a setting, "no" = not written. Brands change what they share; the
 | Apple Watch | not available | stages, HR, HRV, wrist temperature (Series 8+), breathing | none |
 | Pixel Watch / Fitbit | stages, HR, HRV, breathing yes; temperature some | not available | none |
 | Samsung Galaxy Watch | stages, HR yes; HRV, temperature, breathing some | not available | none |
-| Garmin | stages, HR yes; breathing some; HRV, temperature no | HR yes; stages, breathing some; HRV, temperature no | none |
+| Garmin | stages, HR yes; breathing some; HRV, temperature no | HR yes; stages, breathing some; HRV, temperature no | minutes per stage (no timeline), HR, HRV, resting HR (each person's own Garmin key, `garmin` cloud account) |
 | Whoop | HR yes; stages, temperature, breathing some; HRV no | HR yes; stages, breathing some; HRV, temperature no | none |
 | Withings | HR yes; stages, temperature, breathing some; HRV no | HR yes; stages, temperature, breathing some; HRV no | none |
 

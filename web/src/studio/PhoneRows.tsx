@@ -75,15 +75,16 @@ export function DialLine({ d, people, onEdit, onChanged, say }: { d: Dial; peopl
   </div></div>;
 }
 
-/** A cloud account (Oura, Withings, …) one person connected. Remove disconnects it (their history stays). */
-export function CloudLine({ provider, person, mine, onChanged, say }: { provider: { id: string; name: string }; person: PersonView; mine: boolean; onChanged: () => void; say: (m: string) => void }) {
+/** A cloud account (Oura, Withings, Garmin, …) one person connected. Remove disconnects it (their history stays); for a
+ * key provider (Garmin) it also says the key can be deleted at the maker. */
+export function CloudLine({ provider, person, mine, onChanged, say }: { provider: { id: string; name: string; connect?: "signin" | "key" }; person: PersonView; mine: boolean; onChanged: () => void; say: (m: string) => void }) {
   return <div className="devline"><div className="devline-main">
     <span className="sdot ok" role="img" aria-label="Connected" />
     <span className="devline-id"><b>{person.name}'s {provider.name}</b><small className="faint">Cloud account · sleep, heart rate and more, a few times a day</small></span>
     <span className="devline-read"><span>connected</span><small className="mute">Integrations → Cloud accounts</small></span>
     <span className="devline-who tag">{person.name}</span>
     {!mine ? <span className="devline-edit faint" style={{ fontSize: 12 }}>{person.name} manages it</span> : <Acts name={`${person.name}'s ${provider.name}`} confirmText={`Disconnect ${provider.name}?`} onRemove={async () => {
-      try { await api.post(`/api/cloud/me/${provider.id}/disconnect`, { person: person.id }); say(`${provider.name} disconnected. What it already sent stays.`); onChanged(); }
+      try { await api.post(`/api/cloud/me/${provider.id}/disconnect`, { person: person.id }); say(`${provider.name} disconnected. What it already sent stays.${provider.connect === "key" ? ` You can also delete the key at ${provider.name} Connect.` : ""}`); onChanged(); }
       catch (e) { say((e as Error).message); } }} />}
   </div></div>;
 }

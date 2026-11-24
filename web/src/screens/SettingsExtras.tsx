@@ -5,7 +5,7 @@ import Fold from "../components/Fold";
 import WorkDays, { workDaysText } from "../components/WorkDays";
 import { isIOS, webPushSupport } from "../pwa";
 import { BRANDS, type WearableStatus, wearableSummary } from "../wearables";
-import OuraConnect from "./Oura";
+import OuraConnect, { CloudConnect } from "./Oura";
 import WearablePicker from "./WearablePicker";
 import WebNotifications, { IphoneLimits } from "./WebNotifications";
 
@@ -46,15 +46,23 @@ export function SettingsWearable({ person, value, onChange }: { person: string; 
   }, [person]);
   const name = BRANDS.find(b => b.id === value)?.name;
   if (isApp()) {
-    // the Android app has Health Connect above; Oura's direct connection is the fallback
-    return (
+    // the Android app has Health Connect above; Oura's and Garmin's direct connections are the fallbacks. Garmin's
+    // (by the person's own key) is always offered here: the app has no watch picker, so gating it on the chosen
+    // watch left no way to connect Garmin from the phone
+    return (<>
       <Fold id="settings.oura" title="Oura ring, direct" summary="Through Oura's cloud">
         <div className="card">
           <p className="mute" style={{ fontSize: 13 }}>Only needed if Health Connect doesn't bring your ring's temperature or HRV. Readings that arrive both ways are counted once.</p>
           <OuraConnect person={person} />
         </div>
       </Fold>
-    );
+      <Fold id="settings.garmin" title="Garmin, direct" summary="With your own Garmin key">
+        <div className="card">
+          <p className="mute" style={{ fontSize: 13 }}>Brings HRV, which Health Connect doesn't carry from Garmin. Readings that arrive both ways are counted once.</p>
+          <CloudConnect provider="garmin" name="Garmin" person={person} />
+        </div>
+      </Fold>
+    </>);
   }
   const summary = wearables === null ? (name ?? "…") : wearableSummary(wearables, value, snap?.tz, snap?.now);
   return (

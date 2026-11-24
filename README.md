@@ -84,7 +84,7 @@ Studio, the power tools on a computer or tablet:
 **Sleep history and wearables**
 - A night in plain words, a **Nights explorer** that shows every source, sleep stages (estimated from the bed, or imported from a watch
   or ring), heart rate, skin temperature, and a tuning guide for bedtime and wake drift.
-- Wearables arrive from **Health Connect** (Android) or your own cloud account at Oura, Withings, WHOOP or Polar, or generic webhooks and
+- Wearables arrive from **Health Connect** (Android) or your own cloud account at Oura, Withings, WHOOP, Polar or Garmin, or generic webhooks and
   JSON pollers. Clock shifts are detected and readings from several devices are lined up.
 
 **Pets, guests and away**
@@ -195,7 +195,7 @@ All settings are in [docs/configuration.md](docs/configuration.md).
 - **Bounded writes.** Everyday range 12 to 35 °C, the bed's hard range 10 to 45 °C, per-side rate limits, an end time stored before any flash
   begins. Firmware, Wi-Fi and low-level pump and valve commands are refused.
 - **What leaves the house, only if you turn it on:** push messages through Google (FCM; encrypted for each phone, Google carries ciphertext) or
-  through a ntfy server you pick; cloud wearable accounts you connect (Oura, Withings, WHOOP, Polar); an AI model if you point the assistant at one
+  through a ntfy server you pick; cloud wearable accounts you connect (Oura, Withings, WHOOP, Polar, Garmin); an AI model if you point the assistant at one
   (a local model keeps it at home). With none of these, nothing leaves.
 - **Run it behind HTTPS** if you reach it away from home, and keep the MQTT broker on your LAN (the bed's side has no password). See [SECURITY.md](SECURITY.md).
 
