@@ -80,7 +80,8 @@ class HaBridge:
         # extra config topic that is (or may be) retained on the broker, so they can be removed after a restart too.
         # `_extras_live` is the set announced now (None: not announced). `_sent_at` is each extra state topic's last
         # publish time (the rate limit); `_hub_online` the hub's state on the previous tick.
-        saved = self.c.store.get(EXTRA_TOPICS_KEY, []) or []
+        store = getattr(controller, "store", None)    # a bridge can be built without a controller (tests, URL checks)
+        saved = (store.get(EXTRA_TOPICS_KEY, []) if store is not None else []) or []
         self._extras_known: set[str] = {t for t in saved if isinstance(t, str)} if isinstance(saved, list) else set()
         self._extras_live: set[str] | None = None
         self._sent_at: dict[str, float] = {}
@@ -221,7 +222,9 @@ class HaBridge:
     def _save_extras_known(self, topics: set[str]) -> None:
         if topics != self._extras_known:            # written only on a change: a tick costs no store query
             self._extras_known = set(topics)
-            self.c.store.put(EXTRA_TOPICS_KEY, sorted(topics))
+            store = getattr(self.c, "store", None)
+            if store is not None:
+                store.put(EXTRA_TOPICS_KEY, sorted(topics))
 
     def _forget_extras(self) -> None:
         """Forget the extras' remembered values, publish times and restart time."""
