@@ -11,7 +11,7 @@ import DialSetup, { type DialsInfo, dialSummary } from "./DialSetup";
 import CloudAccounts from "./CloudAccounts";
 
 interface Ha { state: string; broker: string | null; prefix: string; entities: number; commands_handled: number; ignored_retained?: number; object_ids: Record<string, string>;
-  host: string; port: number; username: string; password_saved: boolean; from_env: boolean }
+  host: string; port: number; username: string; password_saved: boolean; from_env: boolean; sensors: "basic" | "all" }
 interface Ent { entity_id: string; name: string; device: string }
 
 export default function Integrations() {
@@ -49,6 +49,19 @@ export default function Integrations() {
   const problem = st && !["connected", "off", "starting"].includes(st) ? st.charAt(0).toUpperCase() + st.slice(1) : null;
   const stateColor = st === "connected" ? "var(--good)" : st === "off" ? "var(--mute)" : problem ? "var(--bad)" : "var(--warm)";
   const stateText = !ha ? "…" : st === "connected" ? `Connected to ${ha.broker}` : st === "off" ? "Off" : st === "starting" ? "Connecting…" : "Not connected";
+  // Basic / All sensors: the owner's choice, also when the broker is set by ET_HA_MQTT_URL
+  const setSensors = async (level: "basic" | "all") => {
+    if (!ha || ha.sensors === level) return;
+    setBusy(true);
+    try {
+      const h = await api.put<Ha>("/api/integrations/ha/sensors", { level });
+      setHa(h);
+      say(h.state !== "connected" ? "Saved. It applies when Home Assistant is connected."
+        : level === "all" ? "All sensors are on their way to Home Assistant" : "Back to Basic. The extra sensors were removed from Home Assistant.");
+      api.get<Ent[]>("/api/integrations/ha/entities").then(setEnts).catch(() => {});
+    } catch (e) { say((e as Error).message); }
+    setBusy(false);
+  };
   const goMqtt = (e: React.MouseEvent) => { e.preventDefault(); document.getElementById("mqtt")?.scrollIntoView({ behavior: "smooth" }); };
 
   return (
@@ -59,6 +72,16 @@ export default function Integrations() {
       <Fold id="studio.integrations.entities" className="box" title="What Ember & Tide shows in Home Assistant" keepSummary attention={!!problem}
         summary={<span style={{ color: stateColor }}>● {st === "connected" ? `${ents.length || ha?.entities || 0} entities published` : st === "off" ? "off" : stateText}</span>}>
         <span className="mute" style={{ fontSize: 13 }}>Each person's side appears in Home Assistant (a thermostat, flash buttons, tonight's plan and more), for dashboards, voice, automations and the bedside dials.</span>
+        <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+          <span style={{ flex: "1 1 160px" }}>Sensors sent to Home Assistant</span>
+          <div className="seg" role="group" aria-label="Sensors sent to Home Assistant" style={{ flex: "0 1 260px" }}>
+            {([["basic", "Basic"], ["all", "All sensors"]] as const).map(([lv, label]) =>
+              <button key={lv} type="button" style={{ minHeight: 44 }} aria-pressed={(ha?.sensors ?? "basic") === lv} disabled={busy || !ha} onClick={() => setSensors(lv)}>{label}</button>)}
+          </div>
+        </div>
+        <span className="mute" style={{ fontSize: 13 }}><b style={{ fontWeight: 500 }}>Basic</b>: each person's side (thermostat, flash buttons, tonight's plan, in bed) and the bed's care jobs.</span>
+        <span className="mute" style={{ fontSize: 13 }}><b style={{ fontWeight: 500 }}>All sensors</b>: Basic, plus what the hub reports: fans, faults, water, room humidity, Wi-Fi signal, versions, the light, and each pad's temperature, heart rate and breathing rate.</span>
+        <span className="mute" style={{ fontSize: 13 }}>With All sensors, anyone who can see your Home Assistant can see those readings, heart rate and breathing rate included. Your network's name and address are never sent.</span>
         {st !== "connected" && <p className="dial-note" style={{ margin: 0 }}>{st === "off" || !ha ? "Not turned on yet. " : `${stateText}. `}It goes through your MQTT broker (usually the Mosquitto add-on):{" "}
           <a href="#mqtt" className="link" onClick={goMqtt}>set it up under Advanced (MQTT)</a>.</p>}
         {st === "connected" && <span className="mute" style={{ fontSize: 12.5 }}>{ha!.commands_handled} {ha!.commands_handled === 1 ? "command" : "commands"} from Home Assistant so far.</span>}
