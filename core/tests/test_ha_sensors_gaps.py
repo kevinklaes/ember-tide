@@ -835,3 +835,189 @@ async def test_t22_a_tilt_axis_appearing_mid_run_is_announced_and_remembered(tmp
     await tick(n, b)
     assert b._client.on(ct(S, "tilt_y")) and b._client.on(st("tilt_y")) == ["-0.5"]
     assert ct(S, "tilt_y") in n.store.get("ha_extra_topics")
+
+
+# ═════════════════ WU-4: end to end (T-23 to T-26, T-28) ═════════════════
+import copy                                                                 # noqa: E402
+import time                                                                 # noqa: E402
+
+from embertide.drivers.orion_cloud import parse_live                        # noqa: E402
+from test_orion_cloud import EX6, ZONES, ex7, ex9                           # noqa: E402
+from test_scenarios import Night                                            # noqa: E402
+
+SERIAL = "AABBCCDDEEFF"
+SECRETS = ("Home network", "192.168.1.50", "192.0.2.10", "02:00:00:00:00:01", SERIAL)
+CLOUD_REAL_CAPS = set(OrionCloud.capabilities)
+
+
+class CloudDriver:
+    """A driver with the cloud driver's capabilities and zones, holding no connection."""
+    id, name = "fake-cloud", "Fake cloud"
+    capabilities = CLOUD_REAL_CAPS
+    zones = list(OrionCloud.zones)
+
+    def __init__(self, frame=None):
+        self.frame = frame
+
+    def latest(self):
+        return self.frame
+
+
+def cloud_frame(payload=None, ts=TS):
+    return parse_live(copy.deepcopy(ex9() if payload is None else payload), ZONES, ts)
+
+
+def cloud_extras(f, announced=()):
+    return {e.key: e for e in hs.extras(CloudDriver(f), f, TZ, announced, prefix=PREFIX, device=DEVICE)}
+
+
+# ---------- T-23: the cloud payloads at All ----------
+def test_t23_ex9_gives_its_rows():
+    ex = cloud_extras(cloud_frame())
+    assert ex["model"].state == "OSCT001-1" and ex["model"].entity_id == "sensor.embertide_hub_model"
+    assert "fill_state" not in ex
+    assert ex["fill_in_progress"].state == "OFF" and ex["fill_in_progress"].domain == B
+    assert ex["update_available"].state == "ON" and ex["update_available"].config["device_class"] == "update"
+    assert ex["updating"].state == "OFF" and ex["updating"].config["device_class"] == "running"
+    assert ex["left_thermal_state"].state == "standby"
+    assert ex["left_thermal_state"].entity_id == "sensor.embertide_hub_left_thermal_state"
+    assert ex["left_sensor_problem"].state == "OFF" and ex["left_sensor_problem"].config["device_class"] == "problem"
+    assert ex["left_sensor_firmware"].state == "11.00.04" and ex["left_sensor_hardware"].state == "01.00.00"
+    for key in ("model", "left_thermal_state", "left_sensor_problem", "left_sensor_firmware"):
+        cfg = ex[key].config
+        assert cfg["device"] == DEVICE and cfg["availability_topic"] == "embertide/status"
+        assert not any("command" in k for k in cfg)
+    # the local driver's readings are never reported by the cloud driver: none of their rows exist
+    for key in ("right_thermal_state", "right_sensor_problem", "left_sensor_powered", "left_sensor_algorithm",
+                "left_inlet_temperature", "internal_temperature", "fan_running", "air_valve", "light_on", "setup_mode"):
+        assert key not in ex, key
+    assert not [k for k in ex if k.startswith(("tilt_", "pump_", "water_")) or k.endswith("_rpm")]
+    assert "water_problem" not in ex
+
+
+def test_t23_ex6_fills_the_existing_hub_rows():
+    ex = cloud_extras(cloud_frame(EX6))
+    assert ex["firmware"].state == "2.6.0"
+    assert ex["panel_firmware"].state == "2.5.0"
+    assert ex["wifi_signal"].state == "-58"
+    assert ex["last_restart"].state == hs.timestamp_value(TS - 266238, TZ)          # about 74 hours before the poll
+    assert abs((TS - 266238) - (TS - 74 * 3600)) < 3600
+    assert ex["online"].state == "ON"
+    assert ex["problem"].state == "OFF"
+    assert ex["status"].state == "All good"
+    assert ex["safety"].state == "OFF"
+    assert json.loads(ex["problem"].attributes) == {"status": "All good", "faults": []}
+    for key in ("water_problem", "fan_power", "humidity", "room_temperature", "free_memory", "firmware_build",
+                "last_command", "quiet_fan", "system_state"):
+        assert key not in ex, key
+    assert not [k for k in ex if k.startswith(("water_", "fan_")) and k != "fan_power"]
+
+
+def test_t23_ex7_lists_the_faults():
+    ex = cloud_extras(cloud_frame(ex7()))
+    assert ex["problem"].state == "ON"
+    names = [f["name"] for f in json.loads(ex["problem"].attributes)["faults"]]
+    assert names == ["Fan isn't running", "The hub reported a problem"]
+    assert ex["safety"].state == "ON"
+    assert ex["status"].state == "Fan isn't running"
+
+
+def test_t23_ex8_offline_reads_unknown():
+    online = cloud_frame(EX6)
+    announced = {e.config_topic for e in cloud_extras(online).values()}
+    p = copy.deepcopy(EX6)
+    p["status"]["online"] = False
+    ex = cloud_extras(cloud_frame(p), announced)
+    assert ex["online"].state == "OFF"
+    assert set(ex) >= {"firmware", "panel_firmware", "wifi_signal", "last_restart", "problem", "status", "safety"}
+    for k, e in ex.items():
+        if k != "online":
+            assert e.state == "None", k
+    del p["status"]["online"]
+    assert cloud_extras(cloud_frame(p))["online"].state == "ON"
+
+
+# ---------- T-24: the privacy scan, local and cloud, Basic and All ----------
+class _StatusDriver(FakeDriver):
+    """A fake driver whose status() carries the serial, as the real drivers' does."""
+
+    def status(self):
+        return {"driver": self.id, "name": self.name, "online": True, "detail": "connected", "serial": SERIAL,
+                "age_s": 0.0}
+
+
+def _scan_text(client):
+    return "\n".join(f"{t}\n{p}" for t, p, _ in client.sent)
+
+
+async def test_t24_nothing_private_reaches_home_assistant(tmp_path):
+    local = local_frame(ts=TS)
+    local.hub.wifi_name = "Home network"                       # the fixture's address is already 192.168.1.50
+    assert local.hub.wifi_address == "192.168.1.50"
+    cloud = cloud_frame(EX6)
+    for f, caps in ((local, set(OrionMqtt.capabilities)), (cloud, CLOUD_REAL_CAPS)):
+        for level in ("basic", "all"):
+            n = await fake_night(tmp_path / f"{caps is CLOUD_REAL_CAPS}-{level}", copy.deepcopy(f), caps)
+            n.c.driver = _StatusDriver(caps=caps, frame=n.c.driver.frame)
+            snap = n.c.snapshot()
+            assert snap["system"]["serial"] == SERIAL                  # the serial is there to leak
+            b = bridge(n, level)
+            await b.announce()
+            await b.publish_state(snap)
+            await tick(n, b)
+            text = _scan_text(b._client)
+            assert b._client.sent
+            if level == "all":
+                assert "embertide_hub_" in text and st("wifi_signal") in text
+            for secret in SECRETS:
+                assert secret.lower() not in text.lower(), (level, secret)
+            # the catalogue directly, attributes included
+            ex = hs.extras(n.c.driver, n.c.driver.frame, TZ, prefix=PREFIX, device=DEVICE)
+            blob = "\n".join(f"{e.config_topic}{json.dumps(e.config)}{e.state_topic}{e.state}{e.attributes or ''}"
+                             for e in ex)
+            for secret in SECRETS:
+                assert secret.lower() not in blob.lower(), secret
+
+
+# ---------- T-25: no flipping, end to end ----------
+async def test_t25_versions_do_not_flip_through_the_hold_and_the_bridge(tmp_path):
+    drv = OrionMqtt("mqtt://127.0.0.1:1883", serial=SERIAL)   # never started: nothing connects
+    n = Night(tmp_path, "2026-11-05T23:30")
+    n.c.driver = drv
+    b = bridge(n, "all")
+    now = time.time()
+    for i, kind in enumerate(("valid", "garbage", "valid")):
+        _, f = parse_status(f"orion/{SERIAL}/out", REAL[kind].encode("utf-8"), now + i)
+        drv._frame = drv._hold_sensors(f)
+        if i == 0:
+            await b.announce()
+        await tick(n, b, dt=2)
+        r = drv.latest().zones["right"].sensor
+        assert (r.fw_version, r.hw_version) == ("11.00.09", "01.00.00"), kind
+    assert b._client.on(st("right_sensor_firmware")) == ["11.00.09"]
+    assert b._client.on(st("right_sensor_hardware")) == ["01.00.00"]
+    assert b._client.on(st("left_sensor_firmware")) == ["11.00.09"]
+
+
+# ---------- T-26: read-only, and Basic unchanged ----------
+async def test_t26_the_new_rows_take_no_command_and_basic_has_none(tmp_path):
+    for e in local_extras().values():
+        assert not any("command" in k for k in e.config), e.key
+    n = await sim_night(tmp_path)
+    before = repr(n.bed.latest()), list(getattr(n.bed, "commands", []) or [])
+    b = bridge(n, "all")
+    for key in ("pump_left_running", "fill_valve", "air_valve", "light_on", "setup_mode", "updating"):
+        assert await b.handle(f"embertide/bed/hub/{key}/set", "ON") is None
+    assert (repr(n.bed.latest()), list(getattr(n.bed, "commands", []) or [])) == before
+    assert b.handled == 0
+    n2 = await fake_night(tmp_path / "basic", local_frame(), set(OrionMqtt.capabilities))
+    disc = bridge(n2, "basic").discovery()
+    assert disc and not any("embertide_hub_" in t or "embertide_hub_" in json.dumps(c) for t, c in disc)
+
+
+# ---------- T-28: the docs name the four new families ----------
+def test_t28_the_docs_name_the_new_family_patterns():
+    text = (pathlib.Path(__file__).resolve().parents[2] / "docs" / "integrations.md").read_text(encoding="utf-8")
+    for pattern in ("sensor.embertide_hub_tilt_<axis>", "binary_sensor.embertide_hub_pump_<side>_running",
+                    "sensor.embertide_hub_pump_<side>_state", "sensor.embertide_hub_pump_<side>_load"):
+        assert f"`{pattern}`" in text, pattern

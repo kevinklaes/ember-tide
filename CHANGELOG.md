@@ -8,9 +8,11 @@ minor versions, and each entry says what to check when upgrading.
 - **More of the bed in Home Assistant, if you want it.** Studio → Integrations → Home Assistant has a new choice:
   **Basic** sends what it always has (each person's side and the bed's care jobs); **All sensors** adds everything
   the hub reports, read-only: fans, faults, water, room humidity, Wi-Fi signal, versions, the light, and each pad's
-  temperature, heart rate and breathing rate. Nothing changes until the owner chooses. Your network's name and
-  address are never sent. `ET_HA_SENSORS=all` makes All sensors the starting choice. The entity list is in
-  docs/integrations.md.
+  temperature, heart rate and breathing rate, as well as the hub's internal temperature and tilt, its pumps and
+  valves, the light's state, and each pad sensor's power and versions. A bed on the cloud connection now reports the
+  hub's health too, each side's heating or cooling state, and whether a firmware update is waiting. Nothing changes
+  until the owner chooses. Your network's name and address, and the hub's hardware address and serial number, are
+  never sent. `ET_HA_SENSORS=all` makes All sensors the starting choice. The entity list is in docs/integrations.md.
 
 ## 0.1.21
 
