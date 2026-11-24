@@ -236,8 +236,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         app.state.cloud = state.cloud
         state.oura = app.state.oura = state.cloud.get("oura")
         state.cloud.start()
+        from .ha_sensors import resolve_level as _ha_level
+        # the owner's saved Basic / All sensors choice beats ET_HA_SENSORS; the demo is always Basic
+        ha_level = "basic" if cfg.demo else _ha_level(saved_ha, cfg.ha_sensors)
         state.ha = HaBridge(state.controller, cfg.ha_mqtt_url or saved_ha.get("url"), cfg.ha_prefix if cfg.ha_mqtt_url else saved_ha.get("prefix", cfg.ha_prefix),
-                          ca_file=cfg.ha_mqtt_ca_file, insecure=cfg.ha_mqtt_tls_insecure)
+                          ca_file=cfg.ha_mqtt_ca_file, insecure=cfg.ha_mqtt_tls_insecure, level=ha_level)
         app.state.ha = state.ha
         await state.ha.start()
         if not cfg.auth:

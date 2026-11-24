@@ -47,6 +47,7 @@ def apply_demo_config(cfg) -> None:
     cfg.bed = "sim"
     cfg.push_relay = False
     cfg.ha_mqtt_url = None
+    cfg.ha_sensors = "basic"
     cfg.llm_url = None
     cfg.auth = False
     cfg.update_check = False
