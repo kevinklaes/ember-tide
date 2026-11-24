@@ -19,9 +19,15 @@ NET_NAME, NET_ADDR = "Home network", "192.0.2.10"     # the simulator's stand-in
 
 PINNED_FIXED = ["problem", "status", "water_problem", "safety", "fan_power", "quiet_fan", "humidity",
                 "room_temperature", "wifi_signal", "last_restart", "free_memory", "firmware", "firmware_build",
-                "panel_firmware", "last_command", "online", "system_state", "light_brightness", "light_color"]
+                "panel_firmware", "last_command", "online", "system_state", "light_brightness", "light_color",
+                "internal_temperature", "fan_running", "fan_target_power", "air_valve", "fill_valve",
+                "fill_in_progress", "light_on", "light_blinking", "setup_mode", "model", "fill_state",
+                "update_available", "updating"]
 FIXED_DOMAINS = {"problem": "binary_sensor", "water_problem": "binary_sensor", "safety": "binary_sensor",
-                 "quiet_fan": "binary_sensor", "online": "binary_sensor"}
+                 "quiet_fan": "binary_sensor", "online": "binary_sensor", "fan_running": "binary_sensor",
+                 "air_valve": "binary_sensor", "fill_valve": "binary_sensor", "fill_in_progress": "binary_sensor",
+                 "light_on": "binary_sensor", "light_blinking": "binary_sensor", "setup_mode": "binary_sensor",
+                 "update_available": "binary_sensor", "updating": "binary_sensor"}
 
 # D-4: (device_class, unit, state_class, diagnostic, rate limited) for every row
 FORM = {

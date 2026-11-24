@@ -537,3 +537,301 @@ def test_t27_existing_entity_kinds_are_unchanged_for_the_local_frame():
         got = {"domain": e.domain, "config_topic": e.config_topic, "state_topic": e.state_topic, "state": e.state,
                "limited": e.limited, "config": e.config}
         assert got == want, key
+
+
+# ═════════════════ WU-3: the new rows in the catalogue (T-14 to T-22) ═════════════════
+from embertide.drivers.base import Cap                       # noqa: E402
+from embertide.drivers.orion_cloud import OrionCloud                      # noqa: E402
+from embertide.ha_bridge import HaBridge                                  # noqa: E402
+from test_ha_sensors import FakeDriver, bridge, ct, fake_night, frame, sim_night, st, tick   # noqa: E402
+
+OLD_FIXED = ["problem", "status", "water_problem", "safety", "fan_power", "quiet_fan", "humidity", "room_temperature",
+             "wifi_signal", "last_restart", "free_memory", "firmware", "firmware_build", "panel_firmware",
+             "last_command", "online", "system_state", "light_brightness", "light_color"]
+NEW_FIXED = ["internal_temperature", "fan_running", "fan_target_power", "air_valve", "fill_valve", "fill_in_progress",
+             "light_on", "light_blinking", "setup_mode", "model", "fill_state", "update_available", "updating"]
+OLD_SIDE = ["temperature", "setpoint", "power", "sensor_state", "heart_rate", "breathing_rate"]
+NEW_SIDE = ["inlet_temperature", "thermal_state", "sensor_powered", "sensor_problem", "sensor_firmware",
+            "sensor_hardware", "sensor_algorithm"]
+CLOUD_CAPS = set(OrionCloud.capabilities) | {Cap.HUB_HEALTH, Cap.FAULTS}   # the list WU-2 gives the cloud driver
+
+B, S = "binary_sensor", "sensor"
+# (domain, device_class, unit, state_class, diagnostic, rate limited, state from the recorded `valid` message)
+NEW_LOCAL = {
+    "internal_temperature": (S, "temperature", "°C", "measurement", True, True, "28.2"),
+    "fan_running": (B, "running", None, None, True, False, "OFF"),
+    "fan_target_power": (S, None, "%", "measurement", True, True, "100"),
+    "air_valve": (B, "opening", None, None, True, False, "OFF"),
+    "fill_valve": (B, "opening", None, None, True, False, "OFF"),
+    "fill_in_progress": (B, "running", None, None, True, False, "OFF"),
+    "light_on": (B, "light", None, None, True, False, "OFF"),
+    "light_blinking": (B, None, None, None, True, False, "OFF"),
+    "setup_mode": (B, None, None, None, True, False, "OFF"),
+    "tilt_x": (S, None, "°", "measurement", True, True, "1.1"),
+    "tilt_y": (S, None, "°", "measurement", True, True, "-0.6"),
+    "tilt_z": (S, None, "°", "measurement", True, True, "88.7"),
+}
+for _s in ("left", "right"):
+    NEW_LOCAL.update({
+        f"pump_{_s}_running": (B, "running", None, None, True, False, "OFF"),
+        f"pump_{_s}_state": (S, None, None, None, True, False, "OFF"),
+        f"pump_{_s}_load": (S, None, None, "measurement", True, True, "0"),
+        f"{_s}_inlet_temperature": (S, "temperature", "°C", "measurement", True, True,
+                                    "23.3" if _s == "left" else "23"),
+        f"{_s}_sensor_powered": (B, "power", None, None, True, False, "ON"),
+        f"{_s}_sensor_firmware": (S, None, None, None, True, False, "11.00.09"),
+        f"{_s}_sensor_hardware": (S, None, None, None, True, False, "01.00.00"),
+        f"{_s}_sensor_algorithm": (S, None, None, None, True, False, "02.02.06"),
+    })
+CLOUD_ONLY = ["model", "fill_state", "update_available", "updating", "left_thermal_state", "right_thermal_state",
+              "left_sensor_problem", "right_sensor_problem"]
+
+
+def cloud_like_frame():
+    """A hand-built frame with the readings the cloud driver fills (the cloud payload tests are WU-4's)."""
+    f = frame(filling=False, fill_state="filled", update_available=True, updating=False)
+    f.model = "OSCT001-1"
+    for z in f.zones.values():
+        z.thermal_state = "standby"
+        z.sensor.working, z.sensor.fw_version, z.sensor.hw_version = True, "11.00.09", "01.00.00"
+    return f
+
+
+def every_new_topic():
+    """The config topics of every new row (fixed, per side, one key of each family), as if all were announced."""
+    out = [hs.config_topic(PREFIX, FIXED_DOMAINS_NEW[k], k) for k in NEW_FIXED]
+    out += [hs.config_topic(PREFIX, NEW_LOCAL[k][0], k) for k in NEW_LOCAL if k.startswith(("tilt_", "pump_"))]
+    out += [hs.config_topic(PREFIX, s.domain, s.key) for z in ("left", "right") for s in hs.zone_specs(z)[6:]]
+    return out
+
+
+FIXED_DOMAINS_NEW = {k: (B if k in ("fan_running", "air_valve", "fill_valve", "fill_in_progress", "light_on",
+                                    "light_blinking", "setup_mode", "update_available", "updating") else S)
+                     for k in NEW_FIXED}
+
+
+# ---------- T-14: appended, never reordered ----------
+def test_t14_new_keys_are_appended_after_the_old_ones():
+    assert list(hs.FIXED_KEYS) == OLD_FIXED + NEW_FIXED
+    assert [s.key for s in hs.zone_specs("left")] == [f"left_{k}" for k in OLD_SIDE + NEW_SIDE]
+    assert all(s.reported for s in hs.zone_specs("left")[6:])
+    assert not any(s.reported for s in hs.zone_specs("left")[:6])
+    assert {s.key: s.domain for s in hs.FIXED if s.key in NEW_FIXED} == FIXED_DOMAINS_NEW
+
+
+# ---------- T-15: the local frame's 28 new entities ----------
+def test_t15_the_local_frame_gives_exactly_the_new_rows_in_their_form():
+    ex = local_extras()
+    new = {k: e for k, e in ex.items() if k not in GUARD}
+    assert set(new) == set(NEW_LOCAL) and len(new) == 28
+    for key, (dom, dc, unit, sc, diag, lim, state) in NEW_LOCAL.items():
+        e = new[key]
+        cfg = e.config
+        assert e.domain == dom, key
+        assert e.entity_id == f"{dom}.embertide_hub_{key}" == cfg["default_entity_id"]
+        assert cfg["unique_id"] == f"embertide_hub_{key}" == e.unique_id
+        assert e.config_topic == f"homeassistant/{dom}/embertide_hub_{key}/config"
+        assert e.state_topic == f"embertide/bed/hub/{key}" == cfg["state_topic"]
+        assert cfg["device"] == DEVICE and cfg["availability_topic"] == "embertide/status"
+        assert cfg.get("device_class") == dc, key
+        assert cfg.get("unit_of_measurement") == unit, key
+        assert cfg.get("state_class") == sc, key
+        assert (cfg.get("entity_category") == "diagnostic") == diag, key
+        assert e.limited == lim, key
+        assert e.state == state, key
+        assert cfg["name"] and not any("command" in k for k in cfg), key
+        if dom == B:
+            assert cfg["payload_on"] == "ON" and cfg["payload_off"] == "OFF"
+        else:
+            assert "payload_on" not in cfg
+        assert e.attributes is None and "json_attributes_topic" not in cfg
+
+
+def test_t15_a_pump_running_and_powered_off_sensor_read_on_and_off():
+    f = local_frame()
+    f.hub.pump_on["left"], f.zones["right"].sensor.powered = True, False
+    ex = local_extras(f)
+    assert ex["pump_left_running"].state == "ON" and ex["pump_right_running"].state == "OFF"
+    assert ex["right_sensor_powered"].state == "OFF"
+
+
+# ---------- T-16: number precision ----------
+def test_t16_pump_load_has_two_decimals_and_other_rows_keep_one():
+    f = frame(pump_load={"left": 0.704, "right": 0.71, "rear": 0}, humidity=41.26)
+    ex = {e.key: e for e in hs.extras(FakeDriver(frame=f), f, TZ)}
+    assert ex["pump_left_load"].state == "0.7"
+    assert ex["pump_right_load"].state == "0.71"
+    assert ex["pump_rear_load"].state == "0"
+    assert ex["humidity"].state == "41.3"
+    assert hs.number_text(0.704, 2) == "0.7" and hs.number_text(41.26) == "41.3"
+
+
+# ---------- T-17: never reported means no entity ----------
+def test_t17_readings_never_reported_have_no_entity():
+    ex = local_extras()
+    assert not set(CLOUD_ONLY) & set(ex)
+    f = frame()                                          # every capability, none of the new readings
+    keys = {e.key for e in hs.extras(FakeDriver(frame=f), f, TZ)}
+    new_kinds = set(NEW_FIXED) | {f"{z}_{k}" for z in ("left", "right") for k in NEW_SIDE}
+    assert not keys & new_kinds
+    assert not any(k.startswith(("tilt_", "pump_")) for k in keys)
+
+
+def test_t17_without_the_capability_a_reported_reading_has_no_entity():
+    f = local_frame()
+    for cap, keys in ((Cap.HUB_HEALTH, ["internal_temperature", "fan_running", "tilt_x", "pump_left_running",
+                                        "pump_left_state", "pump_left_load", "setup_mode"]),
+                      (Cap.LED_DIM, ["light_on", "light_blinking"]),
+                      (Cap.MEASURED_TEMP, ["left_inlet_temperature"]),
+                      (Cap.OCCUPANCY, ["left_sensor_powered", "left_sensor_firmware", "left_sensor_algorithm"])):
+        d = FakeDriver(caps=set(Cap) - {cap}, frame=f)
+        got = {e.key for e in hs.extras(d, f, TZ)}
+        assert not got & set(keys), cap
+    cf = cloud_like_frame()
+    got = {e.key for e in hs.extras(FakeDriver(caps=set(Cap) - {Cap.ZONE_TEMP}, frame=cf), cf, TZ)}
+    assert "left_thermal_state" not in got and "model" in got      # the model needs no capability
+
+
+# ---------- T-18: created once reported, then kept ----------
+def test_t18_a_remembered_row_stays_while_its_reading_is_gone():
+    f = frame()
+    d = FakeDriver(frame=f)
+    keys = ["internal_temperature", "left_sensor_firmware", "tilt_x", "pump_left_running", "pump_left_state",
+            "pump_left_load"]
+    doms = {"internal_temperature": S, "left_sensor_firmware": S, "tilt_x": S, "pump_left_running": B,
+            "pump_left_state": S, "pump_left_load": S}
+    announced = {hs.config_topic(PREFIX, doms[k], k) for k in keys}
+    ex = {e.key: e for e in hs.extras(d, f, TZ, announced, prefix=PREFIX)}
+    for k in keys:
+        assert k in ex and ex[k].state == "None", k
+    bare = {e.key for e in hs.extras(d, f, TZ, (), prefix=PREFIX)}
+    assert not bare & set(keys)
+
+
+def test_t18_families_are_remembered_across_a_restart():
+    announced = {hs.config_topic(PREFIX, S, "tilt_x"), hs.config_topic(PREFIX, B, "pump_left_running"),
+                 hs.config_topic(PREFIX, S, "pump_left_state"), hs.config_topic(PREFIX, S, "pump_left_load"),
+                 hs.config_topic("other", S, "tilt_y"),                  # another prefix: ignored
+                 hs.config_topic(PREFIX, S, "pump_right_running")}       # the wrong domain for this family
+    d = FakeDriver(frame=None)
+    ex = {e.key: e for e in hs.extras(d, None, TZ, announced, prefix=PREFIX)}
+    for k in ("tilt_x", "pump_left_running", "pump_left_state", "pump_left_load"):
+        assert k in ex and ex[k].state == "None", k
+    assert ex["pump_left_running"].domain == B
+    assert "tilt_y" not in ex and "pump_right_running" not in ex
+
+
+# ---------- T-19: the families do not overlap and are capped ----------
+def test_t19_fan_and_water_families_take_none_of_the_new_rows():
+    ex = {e.key: e for e in hs.extras(FakeDriver(frame=None), None, TZ, every_new_topic(), prefix=PREFIX)}
+    fans = [k for k in ex if k.startswith("fan_") and k.endswith("_rpm")]
+    water = [k for k in ex if k.startswith("water_")]
+    assert fans == [] and water == []
+    for k in ("fill_in_progress", "fill_state", "fill_valve", "fan_running", "fan_target_power"):
+        assert k in ex, k
+    assert sum(1 for k in ex if k.startswith("pump_left_")) == 3
+    specs = hs.specs(FakeDriver(frame=None), None, every_new_topic(), PREFIX)
+    by_key = {}
+    for s in specs:
+        by_key.setdefault(s.key, s)
+    assert by_key["fan_running"].source == "HubHealth.fan_on"
+    assert by_key["fill_state"].source == "HubHealth.fill_state"
+
+
+def test_t19_families_are_capped_and_keys_reduced():
+    many = {f"a{i:02d}": float(i) for i in range(20)}
+    f = frame(tilt=dict(many), pump_on={k: True for k in many}, pump_state={k: "OFF" for k in many},
+              pump_load=dict(many))
+    keys = [e.key for e in hs.extras(FakeDriver(frame=f), f, TZ)]
+    assert sum(k.startswith("tilt_") for k in keys) == hs.MAX_TILT == 3
+    for end in ("_running", "_state", "_load"):
+        assert sum(k.startswith("pump_") and k.endswith(end) for k in keys) == hs.MAX_PUMPS == 4
+    f = frame(tilt={"x/y": 1.0, "+": 2.0, "#": 3.0}, pump_on={"le+ft#": True, "/": False})
+    keys = [e.key for e in hs.extras(FakeDriver(frame=f), f, TZ)]
+    assert [k for k in keys if k.startswith("tilt_")] == ["tilt_x_y"]
+    assert [k for k in keys if k.startswith("pump_")] == ["pump_le_ft_running"]
+    assert all(set(k) <= set("abcdefghijklmnopqrstuvwxyz0123456789_") for k in keys)
+
+
+# ---------- T-20: ids stay distinct ----------
+async def test_t20_ids_are_distinct_with_a_person_named_hub(tmp_path):
+    n = await sim_night(tmp_path)
+    n.p1.name = "Hub"
+    basic = HaBridge(n.c, "mqtt://x").discovery()
+    for d, f in ((LocalDriver(local_frame()), local_frame()),
+                 (FakeDriver(caps=CLOUD_CAPS, frame=cloud_like_frame()), cloud_like_frame())):
+        extra = hs.extras(d, f, TZ, prefix=PREFIX, device=DEVICE)
+        for fld in ("unique_id", "default_entity_id"):
+            mine = [e.config[fld] for e in extra]
+            assert len(mine) == len(set(mine)), fld
+            assert not set(mine) & {c[fld] for _, c in basic}, fld
+        topics = [e.config_topic for e in extra] + [e.state_topic for e in extra]
+        assert len(topics) == len(set(topics))
+        assert not set(topics) & {t for t, _ in basic}
+
+
+def test_t20_the_cloud_like_frame_gives_its_rows():
+    f = cloud_like_frame()
+    ex = {e.key: e for e in hs.extras(FakeDriver(caps=CLOUD_CAPS, frame=f), f, TZ)}
+    assert ex["model"].state == "OSCT001-1" and ex["model"].domain == S
+    assert ex["fill_state"].state == "filled"
+    assert ex["update_available"].state == "ON" and ex["update_available"].config["device_class"] == "update"
+    assert ex["updating"].state == "OFF" and ex["fill_in_progress"].state == "OFF"
+    assert ex["left_thermal_state"].state == "standby"
+    assert "entity_category" not in ex["left_thermal_state"].config and not ex["left_thermal_state"].limited
+    assert ex["left_sensor_problem"].state == "OFF" and ex["left_sensor_problem"].config["device_class"] == "problem"
+    assert ex["right_sensor_firmware"].state == "11.00.09" and ex["right_sensor_hardware"].state == "01.00.00"
+    assert "left_sensor_algorithm" not in ex and "left_sensor_powered" not in ex
+    f.zones["left"].sensor.working = False
+    assert {e.key: e for e in hs.extras(FakeDriver(caps=CLOUD_CAPS, frame=f), f, TZ)}["left_sensor_problem"].state \
+        == "ON"
+
+
+# ---------- T-21: offline means unknown ----------
+def test_t21_offline_every_new_row_reads_unknown():
+    for f in (local_frame(), cloud_like_frame()):
+        f.online = False
+        ex = {e.key: e for e in hs.extras(FakeDriver(frame=f), f, TZ, every_new_topic(), prefix=PREFIX)}
+        new = [k for k in ex if k not in GUARD]
+        assert new
+        for k in new:
+            assert ex[k].state == "None", k
+
+
+# ---------- T-22: the bridge publishes the new rows ----------
+async def test_t22_internal_temperature_is_rate_limited(tmp_path):
+    n = await fake_night(tmp_path, frame(internal_c=30.0))
+    b = bridge(n, "all")
+    await b.announce()
+    h = n.c.driver.frame.hub
+    for i in range(300):
+        h.internal_c = 30.0 + (i % 50) / 10
+        await tick(n, b)
+    final = h.internal_c
+    for _ in range(30):
+        await tick(n, b)
+    got = b._client.on(st("internal_temperature"))
+    assert len(got) <= 11 and got[-1] == hs.number_text(final)
+
+
+async def test_t22_a_pump_switching_on_is_published_at_once(tmp_path):
+    n = await fake_night(tmp_path, frame(pump_on={"left": False}))
+    b = bridge(n, "all")
+    await b.announce()
+    await tick(n, b, dt=2)
+    assert b._client.on(st("pump_left_running")) == ["OFF"]
+    n.c.driver.frame.hub.pump_on["left"] = True
+    await tick(n, b)
+    assert b._client.on(st("pump_left_running")) == ["OFF", "ON"]
+
+
+async def test_t22_a_tilt_axis_appearing_mid_run_is_announced_and_remembered(tmp_path):
+    n = await fake_night(tmp_path, frame(tilt={"x": 1.0}))
+    b = bridge(n, "all")
+    await b.announce()
+    await tick(n, b)
+    assert not b._client.on(ct(S, "tilt_y"))
+    n.c.driver.frame.hub.tilt["y"] = -0.5
+    await tick(n, b)
+    assert b._client.on(ct(S, "tilt_y")) and b._client.on(st("tilt_y")) == ["-0.5"]
+    assert ct(S, "tilt_y") in n.store.get("ha_extra_topics")

@@ -12,7 +12,8 @@ Names (fixed forever; only the display names may change):
   state topic    embertide/bed/hub/<key>
 
 Privacy: the hub's network name and address are never part of an entity, a state, an attribute or a topic. They
-are read only to withhold a "last command" that repeats them.
+are read only to withhold a "last command" that repeats them. The hub's hardware address and serial number are never
+part of a frame this module reads.
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ AVAILABILITY_TOPIC = f"{BASE}/status"
 KEY_PART_MAX = 32           # a part of a key taken from the driver (zone, fan side, water key) is cut to this
 MAX_WATER = 8               # water readings: at most this many entities
 MAX_FANS = 4                # fan speeds: at most this many entities
+MAX_TILT = 3                # tilt axes: at most this many entities
+MAX_PUMPS = 4               # water pumps: at most this many entities per pump family (running, state, load)
 TEXT_MAX = 250              # text states are cut to this many characters (HA's limit is 255)
 DOMAINS = ("sensor", "binary_sensor")
 MISSING = "None"            # the state text HA shows as unknown (Basic uses the same)
@@ -108,12 +111,13 @@ def state_topics_for(config: str) -> list[str]:
 
 
 # ---------- values ----------
-def number_text(v: Any) -> str:
-    """Whole numbers as integers, other numbers rounded to one decimal; a missing reading is "None"."""
+def number_text(v: Any, digits: int = 1) -> str:
+    """Whole numbers as integers, other numbers rounded to `digits` decimals (one by default); a missing reading is
+    "None"."""
     if v is None or isinstance(v, bool):
         return MISSING
     try:
-        x = round(float(v), 1)
+        x = round(float(v), digits)
     except (TypeError, ValueError):
         return MISSING
     if x != x or x in (float("inf"), float("-inf")):
@@ -238,6 +242,7 @@ class Spec:
     limited: bool = False
     form: dict = field(default_factory=dict)
     source: str = ""                         # the field it reads (for the docs and the tests)
+    digits: int = 1                          # decimals a NUMBER row is rounded to
 
 
 def _problem(c: _Ctx) -> bool | None:
@@ -253,6 +258,11 @@ def _firmware(c: _Ctx) -> Any:
 
 def _not(v: bool | None) -> bool | None:
     return None if v is None else not v
+
+
+def _f(name: str) -> Callable[[_Ctx], Any]:
+    """Reads one field of the frame itself."""
+    return lambda c: getattr(c.frame, name) if c.frame is not None else None
 
 
 TEMP = {"device_class": "temperature", "unit_of_measurement": "°C", "state_class": "measurement"}
@@ -302,6 +312,35 @@ FIXED: tuple[Spec, ...] = (
          source="BedFrame.brightness"),
     Spec("light_color", "sensor", "Hub light colour", COLOR, lambda c: c.frame.rgb if c.frame else None,
          needs=Cap.LED_RGB, reported=True, diag=True, source="BedFrame.rgb"),
+    # readings added later, appended so the order above never changes
+    Spec("internal_temperature", "sensor", "Hub internal temperature", NUMBER, lambda c: c.h("internal_c"),
+         needs=Cap.HUB_HEALTH, reported=True, diag=True, limited=True, form=dict(TEMP), source="HubHealth.internal_c"),
+    Spec("fan_running", "binary_sensor", "Hub fan running", BINARY, lambda c: c.h("fan_on"), needs=Cap.HUB_HEALTH,
+         reported=True, diag=True, form={"device_class": "running"}, source="HubHealth.fan_on"),
+    Spec("fan_target_power", "sensor", "Fan target power", NUMBER, lambda c: c.h("fan_target_pwm"),
+         needs=Cap.HUB_HEALTH, reported=True, diag=True, limited=True, form={"unit_of_measurement": "%", **MEASURE},
+         source="HubHealth.fan_target_pwm"),
+    Spec("air_valve", "binary_sensor", "Air valve", BINARY, lambda c: c.h("air_valve_open"), needs=Cap.HUB_HEALTH,
+         reported=True, diag=True, form={"device_class": "opening"}, source="HubHealth.air_valve_open"),
+    Spec("fill_valve", "binary_sensor", "Fill valve", BINARY, lambda c: c.h("fill_valve_open"), needs=Cap.HUB_HEALTH,
+         reported=True, diag=True, form={"device_class": "opening"}, source="HubHealth.fill_valve_open"),
+    Spec("fill_in_progress", "binary_sensor", "Filling with water", BINARY, lambda c: c.h("filling"),
+         needs=Cap.HUB_HEALTH, reported=True, diag=True, form={"device_class": "running"}, source="HubHealth.filling"),
+    Spec("light_on", "binary_sensor", "Hub light on", BINARY, _f("light_on"), needs=Cap.LED_DIM, reported=True,
+         diag=True, form={"device_class": "light"}, source="BedFrame.light_on"),
+    Spec("light_blinking", "binary_sensor", "Hub light blinking", BINARY, _f("light_blinking"), needs=Cap.LED_DIM,
+         reported=True, diag=True, source="BedFrame.light_blinking"),
+    Spec("setup_mode", "binary_sensor", "Hub setup mode", BINARY, lambda c: c.h("setup_mode"), needs=Cap.HUB_HEALTH,
+         reported=True, diag=True, source="HubHealth.setup_mode"),
+    Spec("model", "sensor", "Hub model", TEXT, lambda c: text_value(_f("model")(c)), reported=True, diag=True,
+         source="BedFrame.model"),
+    Spec("fill_state", "sensor", "Hub water state", TEXT, lambda c: text_value(c.h("fill_state")),
+         needs=Cap.HUB_HEALTH, reported=True, diag=True, source="HubHealth.fill_state"),
+    Spec("update_available", "binary_sensor", "Hub update available", BINARY, lambda c: c.h("update_available"),
+         needs=Cap.HUB_HEALTH, reported=True, diag=True, form={"device_class": "update"},
+         source="HubHealth.update_available"),
+    Spec("updating", "binary_sensor", "Hub updating", BINARY, lambda c: c.h("updating"), needs=Cap.HUB_HEALTH,
+         reported=True, diag=True, form={"device_class": "running"}, source="HubHealth.updating"),
 )
 
 FIXED_KEYS: tuple[str, ...] = tuple(s.key for s in FIXED)
@@ -318,7 +357,8 @@ def _sensor_text(code: Any) -> str:
 
 
 def zone_specs(zone: str) -> list[Spec]:
-    """The per-side rows for one zone the driver names. They need a capability but are not "reported"."""
+    """The per-side rows for one zone the driver names. The first six need a capability but are not "reported"; the
+    rows appended after them are, so they exist only once the driver has reported them."""
     k = key_part(zone)
     if not k:
         return []
@@ -329,6 +369,9 @@ def zone_specs(zone: str) -> list[Spec]:
 
     def sf(attr: str):
         return lambda c: getattr(_zone(c, zone).sensor, attr) if _zone(c, zone) is not None else None
+
+    def problem(c: _Ctx) -> bool | None:
+        return _not(sf("working")(c))
 
     return [
         Spec(f"{k}_temperature", "sensor", f"{side} pad temperature", NUMBER, zf("measured_c"), needs=Cap.MEASURED_TEMP,
@@ -343,6 +386,26 @@ def zone_specs(zone: str) -> list[Spec]:
              form={"unit_of_measurement": "bpm", **MEASURE}, source="SensorFrame.hr"),
         Spec(f"{k}_breathing_rate", "sensor", f"{side} pad breathing rate", NUMBER, sf("br"), needs=Cap.BIO_BR,
              limited=True, form={"unit_of_measurement": "br/min", **MEASURE}, source="SensorFrame.br"),
+        # readings added later, appended so the order above never changes
+        Spec(f"{k}_inlet_temperature", "sensor", f"{side} pad inlet temperature", NUMBER, zf("inlet_c"),
+             needs=Cap.MEASURED_TEMP, reported=True, diag=True, limited=True, form=dict(TEMP), source="ZoneFrame.inlet_c"),
+        Spec(f"{k}_thermal_state", "sensor", f"{side} pad heating state", TEXT,
+             lambda c: text_value(zf("thermal_state")(c)), needs=Cap.ZONE_TEMP, reported=True,
+             source="ZoneFrame.thermal_state"),
+        Spec(f"{k}_sensor_powered", "binary_sensor", f"{side} pad sensor powered", BINARY, sf("powered"),
+             needs=Cap.OCCUPANCY, reported=True, diag=True, form={"device_class": "power"}, source="SensorFrame.powered"),
+        Spec(f"{k}_sensor_problem", "binary_sensor", f"{side} pad sensor problem", BINARY, problem,
+             needs=Cap.OCCUPANCY, reported=True, diag=True, form={"device_class": "problem"},
+             source="SensorFrame.working"),
+        Spec(f"{k}_sensor_firmware", "sensor", f"{side} pad sensor firmware", TEXT,
+             lambda c: text_value(sf("fw_version")(c)), needs=Cap.OCCUPANCY, reported=True, diag=True,
+             source="SensorFrame.fw_version"),
+        Spec(f"{k}_sensor_hardware", "sensor", f"{side} pad sensor hardware", TEXT,
+             lambda c: text_value(sf("hw_version")(c)), needs=Cap.OCCUPANCY, reported=True, diag=True,
+             source="SensorFrame.hw_version"),
+        Spec(f"{k}_sensor_algorithm", "sensor", f"{side} pad sensor algorithm", TEXT,
+             lambda c: text_value(sf("algo_version")(c)), needs=Cap.OCCUPANCY, reported=True, diag=True,
+             source="SensorFrame.algo_version"),
     ]
 
 
@@ -366,20 +429,38 @@ def _keyed(raw: Iterable[Any], announced: Iterable[str], cap: int) -> dict[str, 
     return out
 
 
-def _announced_family(announced: Iterable[str], prefix: str, start: str, end: str = "") -> list[str]:
+def _announced_family(announced: Iterable[str], prefix: str, start: str, end: str = "",
+                      domain: str = "sensor") -> list[str]:
     out = []
     for t in announced:
         p = parse_config_topic(t)
-        if p and p[0] == prefix and p[1] == "sensor" and p[2].startswith(start) and p[2].endswith(end):
+        if p and p[0] == prefix and p[1] == domain and p[2].startswith(start) and p[2].endswith(end):
             mid = p[2][len(start):len(p[2]) - len(end) if end else None]
             if mid and mid == key_part(mid):
                 out.append(mid)
     return out
 
 
+def _family(h: HubHealth | None, announced: list[str], prefix: str, attr: str, start: str, end: str, domain: str,
+            cap: int, name: str, kind: str, **row: Any) -> list[Spec]:
+    """One row per key of the hub's dict `attr` that was reported (now, while online, or before: remembered through
+    `announced`), up to `cap`. Each row is keyed `<start><key><end>` and named `name` with the key filled in."""
+    raw = list((getattr(h, attr) or {}).keys()) if h is not None else []
+    keys = _keyed(raw, _announced_family(announced, prefix, start, end, domain), cap)
+    out = []
+    for k, r in keys.items():
+        read = (lambda r: lambda c: (c.h(attr) or {}).get(r) if r is not None else None)(r)
+        if kind == TEXT:
+            read = (lambda rd: lambda c: text_value(rd(c)))(read)
+        out.append(Spec(f"{start}{k}{end}", domain, name.format(k.replace("_", " ")), kind, read,
+                        needs=Cap.HUB_HEALTH, reported=True, diag=True, source=f"HubHealth.{attr}", **row))
+    return out
+
+
 def specs(driver, frame: BedFrame | None, announced: Iterable[str] = (), prefix: str = "homeassistant") -> list[Spec]:
-    """Every row that could apply to this driver: the fixed rows, per-side rows, and one row per fan side and water
-    key that was reported (now, or before: remembered through `announced`). Capability is not checked here."""
+    """Every row that could apply to this driver: the fixed rows, per-side rows, and one row per fan side, water key,
+    tilt axis and pump side (running, state, load) that was reported (now, or before: remembered through
+    `announced`). Capability is not checked here. A later row with an earlier row's key is dropped by `extras()`."""
     announced = list(announced)
     h = frame.hub if frame is not None and frame.online else None
     out = list(FIXED)
@@ -399,6 +480,15 @@ def specs(driver, frame: BedFrame | None, announced: Iterable[str] = (), prefix:
                         (lambda r: lambda c: (c.h("water_raw") or {}).get(r) if r is not None else None)(r),
                         needs=Cap.WATER_STATUS, reported=True, diag=True, limited=True, form=dict(MEASURE),
                         source="HubHealth.water_raw"))
+    # tilt per axis; pump running, state and load per side
+    out += _family(h, announced, prefix, "tilt", "tilt_", "", "sensor", MAX_TILT, "Hub tilt ({})", NUMBER,
+                   limited=True, form={"unit_of_measurement": "°", **MEASURE})
+    out += _family(h, announced, prefix, "pump_on", "pump_", "_running", "binary_sensor", MAX_PUMPS,
+                   "Water pump ({}) running", BINARY, form={"device_class": "running"})
+    out += _family(h, announced, prefix, "pump_state", "pump_", "_state", "sensor", MAX_PUMPS,
+                   "Water pump ({}) state", TEXT)
+    out += _family(h, announced, prefix, "pump_load", "pump_", "_load", "sensor", MAX_PUMPS,
+                   "Water pump ({}) load", NUMBER, limited=True, form=dict(MEASURE), digits=2)
     for z in getattr(driver, "zones", []) or []:
         out.extend(zone_specs(z))
     return out
@@ -409,7 +499,7 @@ def _state(spec: Spec, c: _Ctx) -> str:
         return MISSING                          # offline means unknown: never the last frame's stale values
     v = spec.read(c)
     if spec.kind == NUMBER:
-        return number_text(v)
+        return number_text(v, spec.digits)
     if spec.kind == BINARY:
         return binary_value(v)
     if spec.kind == TIMESTAMP:
