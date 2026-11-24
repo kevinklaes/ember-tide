@@ -15,6 +15,9 @@ const ago = (t: number) => {
   return s < 120 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
 };
 
+/** The lifetimes Garmin offers at Create Key; the day it runs out is worked out from today. */
+const LIFETIMES = [{ v: "30", label: "30 days" }, { v: "90", label: "90 days" }, { v: "180", label: "180 days" }, { v: "365", label: "1 year" }];
+
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 /** "2026-11-30" → "30 November" (the day the person typed; no time zone shift). */
@@ -27,7 +30,7 @@ export default function KeyConnect({ provider, name, person, st, compact, reload
   provider: string; name: string; person: string; st: OuraStatus; compact: boolean; reload: () => void;
 }) {
   const [key, setKey] = useState("");
-  const [until, setUntil] = useState("");
+  const [life, setLife] = useState("");             // one of LIFETIMES, in days; "" = not chosen yet
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [replacing, setReplacing] = useState(false);
@@ -36,15 +39,20 @@ export default function KeyConnect({ provider, name, person, st, compact, reload
     setBusy(label); setMsg(null);
     try { await f(); return true; } catch (e) { setMsg((e as Error).message); return false; } finally { setBusy(null); reload(); }
   };
+  const runsOut = () => {
+    if (!life) return null;
+    const d = new Date();
+    if (life === "365") d.setFullYear(d.getFullYear() + 1); else d.setDate(d.getDate() + Number(life));
+    return iso(d);
+  };
   const connect = async () => {
     const k = key.trim();
     setKey("");                                    // cleared whether or not it works
-    const ok = await run("connect", () => api.post(`/api/cloud/me/${provider}/connect`, { person, key: k, expires: until || null }));
-    if (ok) { setUntil(""); setReplacing(false); }
+    const ok = await run("connect", () => api.post(`/api/cloud/me/${provider}/connect`, { person, key: k, expires: runsOut() }));
+    if (ok) { setLife(""); setReplacing(false); }
   };
 
   const today = new Date();
-  const max = new Date(today); max.setFullYear(today.getFullYear() + 1);
   const connected = st.connected && !st.needs_reconnect;
   const showForm = !connected || replacing;
 
@@ -81,14 +89,17 @@ export default function KeyConnect({ provider, name, person, st, compact, reload
           <label className="field"><span>Your {name} key</span>
             <input type="password" autoComplete="off" spellCheck={false} autoCapitalize="off" autoCorrect="off"
               value={key} disabled={!!busy} onChange={e => setKey(e.target.value)} /></label>
-          <label className="field"><span>Runs out on (optional)</span>
-            <input type="date" min={iso(today)} max={iso(max)} value={until} disabled={!!busy} onChange={e => setUntil(e.target.value)} />
-            <small className="mute">Add the date and this card reminds you a week before.</small></label>
+          <label className="field"><span>How long it lasts</span>
+            <select value={life} disabled={!!busy} onChange={e => setLife(e.target.value)}>
+              <option value="" disabled>Choose what you picked at {name}</option>
+              {LIFETIMES.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+            </select>
+            <small className="mute">The same choice you made at {name}. This card reminds you a week before it runs out.</small></label>
         </div>
         <small className="mute">Use only your own key. It stays on this home's server and is used only to read your sleep, heart rate and HRV from {name}.</small>
         <div className="keycard-acts">
-          <button className="btn pri" disabled={!!busy || !key.trim()} onClick={connect}>{busy === "connect" ? "Connecting…" : `Connect ${name}`}</button>
-          {replacing && <button className="btn" disabled={!!busy} onClick={() => { setReplacing(false); setKey(""); setUntil(""); setMsg(null); }}>Cancel</button>}
+          <button className="btn pri" disabled={!!busy || !key.trim() || !life} onClick={connect}>{busy === "connect" ? "Connecting…" : `Connect ${name}`}</button>
+          {replacing && <button className="btn" disabled={!!busy} onClick={() => { setReplacing(false); setKey(""); setLife(""); setMsg(null); }}>Cancel</button>}
         </div>
       </>}
       {msg && <p className="warn-text" role="alert">{msg}</p>}

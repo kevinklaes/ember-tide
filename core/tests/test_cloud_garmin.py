@@ -94,6 +94,8 @@ def test_connect_with_a_key(tmp_path):
         sleeps = [q for q in fake.data_requests() if urlsplit(str(q.url)).path == SLEEP_PATH]
         assert len(sleeps) == 2                                   # the background first look, then this one
         assert sleeps[0].headers["authorization"] == f"Bearer {fake.issued[0]}"
+        # the token answer is text/plain: "Accept: application/json" there gets a 406 from Garmin; data calls want JSON
+        assert ex[0].headers["accept"] == "*/*" and sleeps[0].headers["accept"] == "application/json"
         assert len(fake.exchanges()) == 1                         # the token was reused
         assert status(c)["last_sync"] and not status(c, "p1")["connected"]
 

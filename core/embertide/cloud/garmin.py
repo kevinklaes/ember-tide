@@ -173,7 +173,8 @@ class Garmin(CloudConnector):
         return self.c.clock.now_ts() < (st.get("backoff_until") or 0)
 
     # ---------- the one door to Garmin ----------
-    async def _send(self, method: str, path: str, auth: str, params: dict | None = None) -> httpx.Response:
+    async def _send(self, method: str, path: str, auth: str, params: dict | None = None,
+                    accept: str = "application/json") -> httpx.Response:
         """One request to the fixed host. The gate is held for this request only (pause, send, read), never across a
         token exchange: `_get()` and `fresh_token()` each come through here separately."""
         async with self._gate:
@@ -184,7 +185,7 @@ class Garmin(CloudConnector):
             try:
                 async with self._http() as c:
                     r = await c.request(method, HOST + path, params=params, follow_redirects=False, timeout=TIMEOUT_S,
-                                        headers={**UA, "Accept": "application/json", "Authorization": auth})
+                                        headers={**UA, "Accept": accept, "Authorization": auth})
                     await r.aread()
             finally:
                 self._last = self._mono()
@@ -192,7 +193,8 @@ class Garmin(CloudConnector):
 
     async def _exchange(self, key: str) -> tuple[str, float]:
         """The key for a token: (token, end time on the home clock)."""
-        r = await self._send("POST", TOKEN_PATH, f"ApiKey {key}")
+        # the token comes back as text/plain: Garmin answers 406 to "Accept: application/json" here (checked live 2026-11-23)
+        r = await self._send("POST", TOKEN_PATH, f"ApiKey {key}", accept="*/*")
         if r.status_code == 429:
             raise CloudError(BUSY, 429, retry_after(r))
         if r.status_code in (400, 401, 403):

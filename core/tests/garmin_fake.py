@@ -79,6 +79,8 @@ class FakeGarmin:
         auth = req.headers.get("authorization", "")
         if req.method != "POST" or not auth.startswith("ApiKey ") or auth[7:] in self.refused:
             return httpx.Response(401)
+        if "application/json" in req.headers.get("accept", "") and "*/*" not in req.headers.get("accept", ""):
+            return httpx.Response(406, json={"error": "Not Acceptable"})   # what the real token endpoint does
         if isinstance(self.exchange, int):
             return httpx.Response(self.exchange)
         if self.exchange == "empty":
