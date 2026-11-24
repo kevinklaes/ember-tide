@@ -553,7 +553,7 @@ NEW_FIXED = ["internal_temperature", "fan_running", "fan_target_power", "air_val
 OLD_SIDE = ["temperature", "setpoint", "power", "sensor_state", "heart_rate", "breathing_rate"]
 NEW_SIDE = ["inlet_temperature", "thermal_state", "sensor_powered", "sensor_problem", "sensor_firmware",
             "sensor_hardware", "sensor_algorithm"]
-CLOUD_CAPS = set(OrionCloud.capabilities) | {Cap.HUB_HEALTH, Cap.FAULTS}   # the list WU-2 gives the cloud driver
+CLOUD_CAPS = set(OrionCloud.capabilities)
 
 B, S = "binary_sensor", "sensor"
 # (domain, device_class, unit, state_class, diagnostic, rate limited, state from the recorded `valid` message)
@@ -935,6 +935,43 @@ def test_t23_ex8_offline_reads_unknown():
             assert e.state == "None", k
     del p["status"]["online"]
     assert cloud_extras(cloud_frame(p))["online"].state == "ON"
+
+
+# (domain, device_class, unit, state_class, diagnostic, rate limited, state from EX-9; fill_state with "filled")
+CLOUD_FORM = {
+    "model": (S, None, None, None, True, False, "OSCT001-1"),
+    "fill_state": (S, None, None, None, True, False, "filled"),
+    "update_available": (B, "update", None, None, True, False, "ON"),
+    "updating": (B, "running", None, None, True, False, "OFF"),
+    "left_thermal_state": (S, None, None, None, False, False, "standby"),
+    "left_sensor_problem": (B, "problem", None, None, True, False, "OFF"),
+}
+
+
+def test_t23_cloud_only_rows_have_their_form():
+    p = ex9()
+    p["water_fill"] = "filled"
+    ex = cloud_extras(cloud_frame(p))
+    for key, (dom, dc, unit, sc, diag, lim, state) in CLOUD_FORM.items():
+        e = ex[key]
+        cfg = e.config
+        assert e.domain == dom, key
+        assert e.entity_id == f"{dom}.embertide_hub_{key}" == cfg["default_entity_id"]
+        assert cfg["unique_id"] == f"embertide_hub_{key}" == e.unique_id
+        assert e.config_topic == f"homeassistant/{dom}/embertide_hub_{key}/config"
+        assert e.state_topic == f"embertide/bed/hub/{key}" == cfg["state_topic"]
+        assert cfg["device"] == DEVICE and cfg["availability_topic"] == "embertide/status"
+        assert cfg.get("device_class") == dc, key
+        assert cfg.get("unit_of_measurement") == unit, key
+        assert cfg.get("state_class") == sc, key
+        assert (cfg.get("entity_category") == "diagnostic") == diag, key
+        assert e.limited == lim, key
+        assert e.state == state, key
+        assert cfg["name"] and not any("command" in k for k in cfg), key
+        if dom == B:
+            assert cfg["payload_on"] == "ON" and cfg["payload_off"] == "OFF"
+        else:
+            assert "payload_on" not in cfg
 
 
 # ---------- T-24: the privacy scan, local and cloud, Basic and All ----------
