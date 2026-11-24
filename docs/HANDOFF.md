@@ -69,6 +69,7 @@ core/                     Python 3.12 · FastAPI · SQLite (one file in the data
     oura_api.py           Oura's own routes (/api/oura/*, callback /api/oura/callback) on the cloud framework
     fcm.py                FCM HTTP v1 sender (service-account JWT → OAuth token)
     ha_bridge.py          Home Assistant MQTT discovery bridge (climate, buttons, sensors, numbers per person)
+    ha_sensors.py         the "All sensors" level: catalogue of the hub's readings as read-only HA entities (pure functions)
     integrations_api.py   HA bridge settings
     align.py              wearable import alignment (lag cross-correlation)
   tests/                  pytest (asyncio auto); ~194 tests

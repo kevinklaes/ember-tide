@@ -28,12 +28,14 @@ from datetime import datetime
 from .mqtt_url import client_kwargs, parse_mqtt_url
 
 from . import __version__
+from . import ha_sensors as hs
 from .engine.rhythm import night_date, pick_rhythm
 from .models import PALETTE, clamp_phase_temp, person_color
 from .units import c_to_f, clock_style, f_to_c
 
 log = logging.getLogger(__name__)
 BASE = "embertide"
+EXTRA_TOPICS_KEY = "ha_extra_topics"      # store: the extras' config topics that may be retained on the broker
 
 
 def slug(name: str) -> str:
@@ -63,8 +65,9 @@ def broker_error(err: Exception | str) -> str:
 
 class HaBridge:
     def __init__(self, controller, url: str | None = None, prefix: str = "homeassistant",
-                 ca_file: str | None = None, insecure: bool = False) -> None:
+                 ca_file: str | None = None, insecure: bool = False, level: str = hs.DEFAULT_LEVEL) -> None:
         self.c = controller
+        self.level = level if level in hs.LEVELS else hs.DEFAULT_LEVEL
         self.ca_file, self.insecure = ca_file or None, insecure
         self.url = url
         self.prefix = prefix
@@ -73,6 +76,17 @@ class HaBridge:
         self._client = None
         self._last: dict[str, str] = {}
         self._announced: set[str] = set()
+        # level "all": the extras (ha_sensors.py). `_extras_known` mirrors the store record `ha_extra_topics`: every
+        # extra config topic that is (or may be) retained on the broker, so they can be removed after a restart too.
+        # `_extras_live` is the set announced now (None: not announced). `_sent_at` is each extra state topic's last
+        # publish time (the rate limit); `_hub_online` the hub's state on the previous tick.
+        store = getattr(controller, "store", None)    # a bridge can be built without a controller (tests, URL checks)
+        saved = (store.get(EXTRA_TOPICS_KEY, []) if store is not None else []) or []
+        self._extras_known: set[str] = {t for t in saved if isinstance(t, str)} if isinstance(saved, list) else set()
+        self._extras_live: set[str] | None = None
+        self._sent_at: dict[str, float] = {}
+        self._hub_online: bool | None = None
+        self._restart_ts: float | None = None
         self.handled = 0
         self.ignored_retained = 0
 
@@ -94,10 +108,16 @@ class HaBridge:
         return "/".join([BASE, p.id, *parts])
 
     # ---------- discovery ----------
-    def discovery(self) -> list[tuple[str, dict]]:
+    @staticmethod
+    def _bed_device() -> dict:
+        return {"identifiers": ["embertide_bed"], "name": "Ember & Tide · Bed", "manufacturer": "Ember & Tide", "sw_version": __version__}
+
+    def discovery(self, extras: list[hs.Extra] | None = None) -> list[tuple[str, dict]]:
+        """Every entity config. At level `all` the extras follow Basic's entities (`extras` when the caller already
+        built them, else they are built now)."""
         out: list[tuple[str, dict]] = []
         avail = {"availability_topic": f"{BASE}/status"}
-        bed = {"identifiers": ["embertide_bed"], "name": "Ember & Tide · Bed", "manufacturer": "Ember & Tide", "sw_version": __version__}
+        bed = self._bed_device()
         out.append((f"{self.prefix}/binary_sensor/embertide_leak_hold/config", {
             **avail, "device": bed, "name": "Leak hold", "unique_id": "embertide_leak_hold",
             "object_id": "embertide_leak_hold", "state_topic": f"{BASE}/bed/leak_hold",
@@ -183,7 +203,83 @@ class HaBridge:
                     "state_topic": self.t(p, "phase_temp", ph.id), "command_topic": self.t(p, "set", "phase_temp", ph.id),
                     "min": 55 if f else 13, "max": 95 if f else 35, "step": 1 if f else 0.5, "mode": "box",
                     "unit_of_measurement": "°F" if f else "°C", "device_class": "temperature", "entity_category": "config"}))
-        return [(t, {k: v for k, v in c.items() if k != "_oid"}) for t, c in self._ids(out)]
+        basic = [(t, {k: v for k, v in c.items() if k != "_oid"}) for t, c in self._ids(out)]
+        if extras is None:
+            extras = self._extras_now()
+        return basic + [(e.config_topic, e.config) for e in extras]
+
+    # ---------- the extras (level "all") ----------
+    def _extras_now(self, frame=None) -> list[hs.Extra]:
+        """The extras that exist right now, with their states. Empty at level `basic`."""
+        if self.level != "all":
+            return []
+        driver = self.c.driver
+        if frame is None:
+            frame = driver.latest()
+        return hs.extras(driver, frame, self.c.clock.tz, self._extras_known, prefix=self.prefix,
+                         device=self._bed_device(), restart_ts=hs.stable_restart(self._restart_ts, frame))
+
+    def _save_extras_known(self, topics: set[str]) -> None:
+        if topics != self._extras_known:            # written only on a change: a tick costs no store query
+            self._extras_known = set(topics)
+            store = getattr(self.c, "store", None)
+            if store is not None:
+                store.put(EXTRA_TOPICS_KEY, sorted(topics))
+
+    def _forget_extras(self) -> None:
+        """Forget the extras' remembered values, publish times and restart time."""
+        for d in (self._last, self._sent_at):
+            for t in [t for t in d if t.startswith(hs.STATE_BASE + "/")]:
+                del d[t]
+        self._restart_ts = None
+        self._hub_online = None
+
+    async def _publish_extra(self, topic: str, value: str, limited: bool, now: float) -> None:
+        """Publish one extra state: never an unchanged value; a rate-limited topic at most once per MIN_INTERVAL_S
+        counted from its last publish of any value (None included). A clock that went backwards counts as passed."""
+        if self._last.get(topic) == value:
+            return
+        if limited and topic in self._last:
+            sent = self._sent_at.get(topic)
+            if sent is not None and 0 <= now - sent < hs.MIN_INTERVAL_S:
+                return                    # held back: the next tick after the interval sends the newest value
+        self._last[topic], self._sent_at[topic] = value, now     # before the await: overlapping ticks can't both send
+        await self._client.publish(topic, value.encode(), retain=True)
+
+    async def _publish_extras(self) -> None:
+        if not self._client or self.level != "all" or self._extras_live is None:
+            return                        # extras' states go out only while their entities are announced
+        frame = self.c.driver.latest()
+        now = self.c.clock.now_ts()
+        online = frame is not None and bool(frame.online)
+        if frame is None or (online and not self._hub_online):
+            # start-up, or the hub is back: real values are not held back by publishes made while it was away
+            for t in [t for t in self._sent_at if t.startswith(hs.STATE_BASE + "/")]:
+                del self._sent_at[t]
+        self._hub_online = online
+        self._restart_ts = hs.stable_restart(self._restart_ts, frame)
+        extras = self._extras_now(frame)
+        if {e.config_topic for e in extras} != self._extras_live:
+            await self.announce()         # a reading reported for the first time, or a capability that changed
+            if not self._client or self._extras_live is None:
+                return
+        for e in extras:
+            await self._publish_extra(e.state_topic, e.state, e.limited, now)
+            if e.attributes_topic and e.attributes is not None:
+                await self._publish_extra(e.attributes_topic, e.attributes, False, now)
+
+    async def set_level(self, level: str) -> None:
+        """Switch between Basic and All sensors at once, without reconnecting."""
+        if level not in hs.LEVELS:
+            raise ValueError(f"unknown level {level!r}")
+        if level != self.level:
+            log.info("home assistant: sensors level %s", level)
+        self.level = level
+        if level != "all":
+            self._forget_extras()
+        if self._client:
+            await self.announce()
+            await self._publish_extras()
 
     @staticmethod
     def _ids(msgs: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
@@ -444,6 +540,9 @@ class HaBridge:
         await self.stop()
         self.url, self.prefix = url, prefix
         self._last.clear()
+        self._sent_at.clear()
+        self._extras_live = None
+        self._hub_online = None
         self.state = "off" if not url else "starting"
         await self.start()
 
@@ -452,7 +551,7 @@ class HaBridge:
             t = parse_mqtt_url(self.url) if self.url else None
         except ValueError:
             t = None
-        return {"state": self.state, "broker": f"{t.host}:{t.port}" if t else None, "tls": bool(t and t.tls), "prefix": self.prefix,
+        return {"state": self.state, "sensors": self.level, "broker": f"{t.host}:{t.port}" if t else None, "tls": bool(t and t.tls), "prefix": self.prefix,
                 "entities": len(self.discovery()), "commands_handled": self.handled, "ignored_retained": getattr(self, "ignored_retained", 0),
                 "object_ids": {p.id: self.oid(p) for p in self.c.household.people}}
 
@@ -463,26 +562,48 @@ class HaBridge:
             if self._last.get(topic) != value:
                 self._last[topic] = value
                 await self._client.publish(topic, value.encode(), retain=True)
+        await self._publish_extras()
+
+    async def _clear_extra(self, config_topic: str) -> None:
+        """An extra was removed: also clear its retained state and attributes, so no reading stays on the broker."""
+        for t in hs.state_topics_for(config_topic):
+            self._last.pop(t, None)
+            self._sent_at.pop(t, None)
+            await self._client.publish(t, b"", retain=True)
 
     async def announce(self) -> None:
         if not self._client:
             return
-        msgs = self.discovery()
+        extras = self._extras_now()
+        msgs = self.discovery(extras)
         keep = {t for t, _ in msgs}
+        live = {e.config_topic for e in extras}
+        self._extras_live = live                           # before any await: an overlapping tick won't announce again
+        known = self._extras_known | live
+        self._save_extras_known(known)                     # the record first: it never misses a topic the broker holds
         for topic, cfg in msgs:
             await self._client.publish(topic, json.dumps(cfg).encode(), retain=True)
-        for gone in self._announced - keep:                # e.g. a phase was removed: take its entity away in HA
+        for gone in (self._announced | known) - keep:      # e.g. a phase was removed: take its entity away in HA
             await self._client.publish(gone, b"", retain=True)
+            if gone in known:
+                await self._clear_extra(gone)
         self._announced = keep
+        self._save_extras_known(live)
 
     async def unannounce(self) -> int:
-        """Remove every Ember & Tide entity from Home Assistant (empty retained configs)."""
+        """Remove every Ember & Tide entity from Home Assistant (empty retained configs), the extras included."""
         if not self._client:
             return 0
-        topics = {t for t, _ in self.discovery()} | self._announced
+        extras = self._extras_now()
+        known = self._extras_known | {e.config_topic for e in extras}
+        self._extras_live = None                           # extras' states stop until the next announce
+        topics = {t for t, _ in self.discovery(extras)} | self._announced | known
         for t in topics:
             await self._client.publish(t, b"", retain=True)
+            if t in known:
+                await self._clear_extra(t)
         self._announced = set()
+        self._save_extras_known(set())
         return len(topics)
 
     async def _run(self) -> None:

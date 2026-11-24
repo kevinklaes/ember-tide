@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from fastapi import APIRouter, HTTPException
@@ -15,6 +16,10 @@ class HaBody(BaseModel):
     password: str = Field("", max_length=200)
     keep_password: bool = False                    # leave the saved password as it is
     prefix: str = Field("homeassistant", min_length=1, max_length=60)
+
+
+class SensorsBody(BaseModel):
+    level: Any = None                              # "basic" or "all"; checked in the handler so a wrong value gets a plain message
 
 
 def build_integrations_router(state) -> APIRouter:
@@ -48,8 +53,20 @@ def build_integrations_router(state) -> APIRouter:
         from urllib.parse import quote
         cred = f"{quote(b.username, safe='')}:{quote(pw, safe='')}@" if b.username else ""
         url = f"mqtt://{cred}{host}:{b.port}" if host else None
-        state.controller.store.put("ha_bridge", {"url": url, "prefix": b.prefix.strip()})
+        saved = state.controller.store.get("ha_bridge", {}) or {}
+        state.controller.store.put("ha_bridge", {**saved, "url": url, "prefix": b.prefix.strip()})   # keeps the sensors level
         await state.ha.restart(url, b.prefix.strip())
+        return masked()
+
+    @r.put("/ha/sensors")
+    async def put_sensors(b: SensorsBody):
+        """Basic or All sensors. Works when the broker comes from ET_HA_MQTT_URL too: the level is the owner's choice."""
+        from .ha_sensors import LEVELS
+        if not isinstance(b.level, str) or b.level not in LEVELS:
+            raise HTTPException(422, "Choose Basic or All sensors.")
+        saved = state.controller.store.get("ha_bridge", {}) or {}
+        state.controller.store.put("ha_bridge", {**saved, "sensors": b.level})   # keeps the broker details
+        await state.ha.set_level(b.level)
         return masked()
 
     @r.get("/ha/entities")

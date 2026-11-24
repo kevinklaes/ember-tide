@@ -58,6 +58,7 @@ def test_studio_actions(tmp_path):
         # integrations: saving HA settings without a reachable HA is stored and reported, not a crash
         r = c.put("/api/integrations/ha", json={"enabled": False, "url": "", "prefix": "homeassistant"}, headers=H)
         assert r.status_code in (200, 422), r.text
+        assert c.put("/api/integrations/ha/sensors", json={"level": "basic"}, headers=H).json()["sensors"] == "basic"
         # rhythm editor round trip
         rh = c.get("/api/people/p1/rhythms").json()
         rhythms = rh["rhythms"] if isinstance(rh, dict) else rh

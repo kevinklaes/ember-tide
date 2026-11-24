@@ -3,9 +3,15 @@ configuration at all you get the simulator, so the UI can be tried before touchi
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+log = logging.getLogger("embertide.config")
+
+HA_SENSOR_LEVELS = ("basic", "all")    # the same as ha_sensors.LEVELS, kept here so this module stays import-light
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -81,6 +87,8 @@ class Config:
     public_url: str | None = field(default_factory=lambda: _env("ET_PUBLIC_URL"))   # how phones reach this server, for notification buttons
     ha_mqtt_url: str | None = field(default_factory=lambda: _env("ET_HA_MQTT_URL"))           # mqtt://user:pass@homeassistant.local:1883
     ha_prefix: str = field(default_factory=lambda: _env("ET_HA_DISCOVERY_PREFIX", "homeassistant"))
+    # Home Assistant sensors level until the owner chooses in Studio: "basic" (default) or "all"
+    ha_sensors: str = field(default_factory=lambda: (_env("ET_HA_SENSORS", "basic") or "basic").strip().lower())
     auth: bool = field(default_factory=lambda: (_env("ET_AUTH", "on") or "on").lower() not in ("off", "0", "false", "no"))
     trust_proxy: bool = field(default_factory=lambda: (_env("ET_TRUST_PROXY", "off") or "off").lower() in ("on", "1", "true", "yes"))
     proxy_cloudflare: bool = field(default_factory=lambda: (_env("ET_PROXY_CLOUDFLARE", "off") or "off").lower() in ("on", "1", "true", "yes"))
@@ -99,10 +107,14 @@ class Config:
     update_url: str = field(default_factory=lambda: _env("ET_UPDATE_URL", DEFAULT_UPDATE_URL) or DEFAULT_UPDATE_URL)
 
     def __post_init__(self) -> None:
+        if self.ha_sensors not in HA_SENSOR_LEVELS:
+            log.warning("ET_HA_SENSORS=%r is not basic or all; using basic", self.ha_sensors)
+            self.ha_sensors = "basic"
         if self.demo:
             self.bed = "sim"
             self.push_relay = False
             self.ha_mqtt_url = None
+            self.ha_sensors = "basic"
             self.llm_url = None
             self.update_check = False
 
