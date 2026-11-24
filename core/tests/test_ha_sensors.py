@@ -412,3 +412,319 @@ def test_state_topics_for_a_config_topic():
     assert hs.state_topics_for(t) == ["embertide/bed/hub/left_heart_rate", "embertide/bed/hub/left_heart_rate/attributes"]
     assert hs.state_topics_for("homeassistant/sensor/embertide_left_phase/config") == []
     assert hs.parse_config_topic("homeassistant/button/embertide_hub_x/config") is None
+
+
+# ═════════════════ the bridge at level "all" (WU-2) ═════════════════
+class FakeClient:
+    """Records what the bridge publishes. Async, like aiomqtt's client."""
+
+    def __init__(self, on_publish=None):
+        self.sent: list[tuple[str, str, bool]] = []
+        self.on_publish = on_publish
+
+    async def publish(self, topic, payload, qos=0, retain=False):
+        if self.on_publish:
+            self.on_publish(topic, payload)
+        self.sent.append((topic, payload.decode() if isinstance(payload, bytes) else str(payload), retain))
+
+    def on(self, topic):
+        return [p for t, p, _ in self.sent if t == topic]
+
+    def topics(self):
+        return [t for t, _, _ in self.sent]
+
+
+def bridge(n, level="basic", client=True):
+    b = HaBridge(n.c, "mqtt://x", level=level)
+    if client:
+        b._client = FakeClient()
+    return b
+
+
+def st(key):
+    return hs.state_topic(key)
+
+
+def ct(domain, key):
+    return hs.config_topic(PREFIX, domain, key)
+
+
+def is_extra(topic, extras):
+    return topic in {e.config_topic for e in extras}
+
+
+async def fake_night(tmp_path, f=None, caps=None):
+    """A Night whose controller reads a hand-built frame: each reading changes exactly when the test says."""
+    n = Night(tmp_path, "2026-11-05T23:30")
+    n.c.driver = FakeDriver(caps=caps, frame=f if f is not None else frame(fan_rpm={"left": 1800}, humidity=40.0))
+    return n
+
+
+async def tick(n, b, dt=1.0):
+    await b._publish_extras()
+    n.clock.advance(dt)
+
+
+# ---------- T-1: Basic is unchanged ----------
+async def test_basic_is_unchanged_and_all_only_adds(tmp_path):
+    n = await sim_night(tmp_path)
+    await n.step(1)
+    snap = n.c.last_snapshot
+    basic, every = HaBridge(n.c, "mqtt://x"), HaBridge(n.c, "mqtt://x", level="all")
+    assert basic.level == "basic" and basic.status()["sensors"] == "basic" and every.status()["sensors"] == "all"
+    assert HaBridge(n.c, "mqtt://x", level="most").level == "basic"
+    b_disc = basic.discovery()
+    assert not any("/embertide_hub_" in t for t, _ in b_disc)
+    extras = every._extras_now()
+    assert len(extras) >= 30
+    a_disc = every.discovery()
+    assert [m for m in a_disc if not is_extra(m[0], extras)] == b_disc                 # same Basic list, same order
+    assert a_disc[len(b_disc):] == [(e.config_topic, e.config) for e in extras]
+    assert basic.states(snap) == every.states(snap)                                   # states() is Basic's only
+    assert every.status()["entities"] == len(b_disc) + len(extras)
+
+    b = bridge(n)
+    await b.announce()
+    await b.publish_state(snap)
+    assert not any(t.startswith("embertide/bed/hub/") for t in b._client.topics())
+    assert n.store.get("ha_extra_topics") is None                                     # Basic writes no record
+
+
+# ---------- T-9 / T-10: switching while connected ----------
+async def test_basic_to_all_announces_then_publishes_states(tmp_path):
+    n = await sim_night(tmp_path)
+    b = bridge(n)
+    await b.announce()
+    b._client.sent.clear()
+    await b.set_level("all")
+    topics = b._client.topics()
+    extras = b._extras_now()
+    cfg_idx = [topics.index(e.config_topic) for e in extras]
+    state_idx = [topics.index(e.state_topic) for e in extras]
+    assert max(cfg_idx) < min(state_idx)
+    assert b._client.on(st("fan_left_rpm")) == ["1800"]
+    assert json.loads(b._client.on(ct("sensor", "fan_left_rpm"))[0])["unique_id"] == "embertide_hub_fan_left_rpm"
+    assert "embertide/status" not in topics
+
+
+async def test_all_to_basic_removes_extras_only(tmp_path):
+    n = await sim_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    await b._publish_extras()
+    extras = b._extras_now()
+    basic_topics = [t for t, _ in HaBridge(n.c, "mqtt://x").discovery()]
+    b._client.sent.clear()
+    await b.set_level("basic")
+    sent = b._client.sent
+    for e in extras:
+        assert [p for t, p, r in sent if t == e.config_topic] == [""], e.key
+        assert ("", True) == next((p, r) for t, p, r in sent if t == e.state_topic)
+    assert ("embertide/bed/hub/problem/attributes", "", True) in sent
+    assert not any(t == "embertide/status" for t, _, _ in sent)
+    assert not any(t in basic_topics and p == "" for t, p, _ in sent)               # no Basic entity removed
+    assert n.store.get("ha_extra_topics") == []
+    assert b.level == "basic" and not b._extras_now()
+
+
+# ---------- T-11 / T-12: the record of announced extras ----------
+async def test_a_new_bridge_at_basic_removes_what_an_old_one_announced(tmp_path):
+    n = await sim_night(tmp_path)
+    old = bridge(n, "all")
+    await old.announce()
+    announced = {e.config_topic for e in old._extras_now()}
+    assert ct("sensor", "water_reservoir") in announced
+
+    new = bridge(n, "basic")                       # a server restart at Basic, same store
+    await new.announce()
+    emptied = {t for t, p, _ in new._client.sent if p == "" and t.endswith("/config")}
+    assert emptied == announced
+    assert "" in new._client.on(st("water_reservoir"))
+    assert n.store.get("ha_extra_topics") == []
+
+
+async def test_level_changed_while_not_connected_applies_on_connect(tmp_path):
+    n = await sim_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    announced = {e.config_topic for e in b._extras_now()}
+    b._client = None                               # the broker went away
+    await b.set_level("basic")
+    b._client = FakeClient()                       # back: _run() announces
+    await b.announce()
+    emptied = {t for t, p, _ in b._client.sent if p == "" and t.endswith("/config")}
+    assert emptied == announced
+
+
+async def test_record_is_written_before_the_first_extra_config(tmp_path):
+    n = await sim_night(tmp_path)
+    b = HaBridge(n.c, "mqtt://x", level="all")
+    extras = {e.config_topic for e in b._extras_now()}
+    seen = []
+
+    def check(topic, payload):
+        if topic in extras and payload:
+            seen.append(set(n.store.get("ha_extra_topics") or []))
+    b._client = FakeClient(on_publish=check)
+    await b.announce()
+    assert seen and all(extras <= s for s in seen)
+    assert set(n.store.get("ha_extra_topics")) == extras == b._extras_live
+
+
+# ---------- T-13: remove, announce, and a reading that appears mid-run ----------
+async def test_unannounce_covers_extras_until_the_next_announce(tmp_path):
+    n = await sim_night(tmp_path)
+    await n.step(1)
+    b = bridge(n, "all")
+    await b.announce()
+    await b._publish_extras()
+    extras = b._extras_now()
+    b._client.sent.clear()
+    count = await b.unannounce()
+    assert count == len({t for t, _ in HaBridge(n.c, "mqtt://x").discovery()}) + len(extras)
+    for e in extras:
+        assert b._client.on(e.config_topic) == [""] and b._client.on(e.state_topic) == [""]
+    assert n.store.get("ha_extra_topics") == []
+    b._client.sent.clear()
+    n.clock.advance(60)
+    n.bed._tick()
+    await b.publish_state(n.c.last_snapshot)
+    assert not any(t.startswith("embertide/bed/hub/") or "embertide_hub_" in t for t in b._client.topics())
+    await b.announce()
+    await b._publish_extras()
+    assert b._client.on(st("fan_left_rpm")) and b._client.on(ct("sensor", "fan_left_rpm"))
+
+
+async def test_a_water_key_that_appears_gets_announced_on_the_next_tick(tmp_path):
+    n = await fake_night(tmp_path, frame(water_raw={"a": 1}))
+    b = bridge(n, "all")
+    await b.announce()
+    await tick(n, b)
+    assert not b._client.on(ct("sensor", "water_b"))
+    n.c.driver.frame.hub.water_raw = {"a": 1, "b": 2}
+    await tick(n, b)
+    assert b._client.on(ct("sensor", "water_b")) and b._client.on(st("water_b")) == ["2"]
+    assert ct("sensor", "water_b") in n.store.get("ha_extra_topics")
+
+
+# ---------- T-14 to T-17: publishing and the rate limit ----------
+async def test_a_reading_changing_every_second_is_held_to_one_per_interval(tmp_path):
+    n = await fake_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    s = n.c.driver.frame.zones["left"].sensor
+    for i in range(300):
+        s.hr = 40 + i % 50
+        await tick(n, b)
+    final = s.hr
+    for _ in range(30):
+        await tick(n, b)
+    hr = b._client.on(st("left_heart_rate"))
+    assert len(hr) <= 11 and hr[-1] == str(final)
+    assert b._client.on(st("left_power")) == ["ON"]                # unchanged values publish nothing again
+    assert b._client.on(st("humidity")) == ["40"]
+
+
+async def test_a_problem_is_published_at_once(tmp_path):
+    n = await fake_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    await tick(n, b, dt=2)
+    assert b._client.on(st("problem")) == ["OFF"]
+    n.c.driver.frame.hub.water_ok = False
+    await tick(n, b)
+    assert b._client.on(st("problem")) == ["OFF", "ON"]
+    assert b._client.on(st("water_problem")) == ["OFF", "ON"]
+
+
+async def test_last_restart_is_published_once_while_uptime_grows(tmp_path):
+    n = await fake_night(tmp_path)
+    f = n.c.driver.frame
+    b = bridge(n, "all")
+    await b.announce()
+    for _ in range(3600):
+        f.ts += 1
+        f.hub.uptime_s += 1
+        await tick(n, b)
+    assert len(b._client.on(st("last_restart"))) == 1
+
+
+async def test_a_simulator_restart_publishes_one_new_timestamp(tmp_path):
+    n = await sim_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    for _ in range(5):
+        n.bed._tick()
+        await tick(n, b)
+    first = b._client.on(st("last_restart"))
+    assert len(first) == 1 and first[0] != "None"
+    n.bed.restart_now()
+    for _ in range(200):
+        n.bed._tick()
+        await tick(n, b)
+    after = b._client.on(st("last_restart"))[1:]
+    assert after[0] == "None"                                      # unknown while the hub is away
+    assert [v for v in after if v != "None"] and len([v for v in after if v != "None"]) == 1
+    assert after[-1] != first[0]
+
+
+async def test_limited_topics_publish_at_once_when_nothing_is_remembered(tmp_path):
+    n = await fake_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    s = n.c.driver.frame.zones["left"].sensor
+    await tick(n, b)
+    assert b._client.on(st("left_heart_rate")) == ["60"]           # nothing remembered: at once
+    s.hr = 61
+    await tick(n, b)
+    assert b._client.on(st("left_heart_rate")) == ["60"]           # held back
+    b._last.clear()                                                # connect, HA online, "Publish again"
+    await tick(n, b)
+    assert b._client.on(st("left_heart_rate")) == ["60", "61"]
+
+
+async def test_back_online_values_are_not_held_back(tmp_path):
+    n = await fake_night(tmp_path)
+    f = n.c.driver.frame
+    b = bridge(n, "all")
+    await b.announce()
+    await tick(n, b, dt=5)
+    f.online = False
+    await tick(n, b, dt=5)
+    assert b._client.on(st("online")) == ["ON", "OFF"]
+    f.online = True
+    f.zones["left"].sensor.hr = 72
+    await tick(n, b)
+    assert b._client.on(st("left_heart_rate"))[-1] == "72"
+
+
+async def test_a_reading_flickering_to_none_is_still_limited(tmp_path):
+    n = await fake_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    s = n.c.driver.frame.zones["left"].sensor
+    for i in range(300):
+        s.hr = 60 if i % 2 else None
+        await tick(n, b)
+    assert len(b._client.on(st("left_heart_rate"))) <= 11
+
+
+async def test_a_clock_that_jumps_back_does_not_block(tmp_path):
+    n = await fake_night(tmp_path)
+    b = bridge(n, "all")
+    await b.announce()
+    await tick(n, b, dt=0)
+    n.clock.advance(-100)
+    n.c.driver.frame.zones["left"].sensor.hr = 90
+    await tick(n, b)
+    assert b._client.on(st("left_heart_rate")) == ["60", "90"]
+
+
+async def test_no_command_topics_for_the_hub(tmp_path):
+    n = await sim_night(tmp_path)
+    b = bridge(n, "all")
+    before = (n.bed.brightness, n.bed.rgb, n.bed.quiet)
+    for topic in ("embertide/hub/set/light", "embertide/bed/hub/set/light"):
+        assert await b.handle(topic, "50") is None
+    assert (n.bed.brightness, n.bed.rgb, n.bed.quiet) == before
+    assert not any("command_topic" in e.config for e in b._extras_now())
