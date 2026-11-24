@@ -31,6 +31,11 @@ class SensorFrame:
     hr: int | None = None
     br: int | None = None
     clock: tuple | None = None       # opaque token; must change for the sensor to count as alive
+    powered: bool | None = None      # whether the pad sensor has power
+    working: bool | None = None      # False when the maker says the pad sensor is not working
+    fw_version: str | None = None    # the pad sensor's firmware version
+    hw_version: str | None = None    # the pad sensor's hardware version
+    algo_version: str | None = None  # the pad sensor's algorithm version
 
 
 @dataclass
@@ -39,6 +44,8 @@ class ZoneFrame:
     setpoint_c: float | None = None
     measured_c: float | None = None
     sensor: SensorFrame = field(default_factory=SensorFrame)
+    inlet_c: float | None = None         # the side's second temperature reading (meaning not confirmed), °C
+    thermal_state: str | None = None     # heating, cooling or standing by, in the maker's own word
 
 
 @dataclass
@@ -62,6 +69,20 @@ class HubHealth:
     humidity: float | None = None           # the unit's own room humidity reading (%)
     room_c: float | None = None
     free_memory_kb: int | None = None
+    internal_c: float | None = None         # the control unit's own internal temperature, °C
+    tilt: dict[str, float] = field(default_factory=dict)       # how far the unit leans, in degrees, per axis name
+    fan_on: bool | None = None              # whether the fan is switched on
+    fan_target_pwm: int | None = None       # the fan power the unit is aiming for (%)
+    pump_on: dict[str, bool] = field(default_factory=dict)     # whether each water pump is running, per side name
+    pump_state: dict[str, str] = field(default_factory=dict)   # each pump's state in the unit's own word
+    pump_load: dict[str, float] = field(default_factory=dict)  # each pump's smoothed load reading, the unit's own number
+    air_valve_open: bool | None = None      # whether the air valve is open
+    fill_valve_open: bool | None = None     # whether the fill valve is open
+    filling: bool | None = None             # whether the unit is filling with water
+    setup_mode: bool | None = None          # whether the unit is in its wireless setup mode
+    fill_state: str | None = None           # the water state in the maker's own word
+    update_available: bool | None = None    # whether the maker has a firmware update waiting
+    updating: bool | None = None            # whether a firmware update is running now
 
 
 @dataclass
@@ -76,6 +97,9 @@ class BedFrame:
     fault: bool | None = None
     online: bool = True
     hub: HubHealth | None = None
+    light_on: bool | None = None          # whether the unit's light is lit
+    light_blinking: bool | None = None    # whether the unit's light is blinking
+    model: str | None = None              # the unit's model name
 
 
 class CommandError(Exception):

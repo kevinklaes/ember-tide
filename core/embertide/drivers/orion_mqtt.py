@@ -37,6 +37,37 @@ def _bool(v):
     return None
 
 
+def _flag(v):
+    """A yes/no value in any of the shapes the bed uses: a boolean, the text "true"/"false", or the number 0 or 1."""
+    if isinstance(v, bool):
+        return v
+    if v in ("true", "false"):
+        return v == "true"
+    if isinstance(v, (int, float)) and v in (0, 1):
+        return v == 1
+    return None
+
+
+_VERSION = re.compile(r"[A-Za-z0-9._-]{1,32}")
+
+
+def clean_version(v):
+    """A version string as the bed or the maker sends it, or None when it is garbled (stray bytes, spaces, too long)."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    return v if _VERSION.fullmatch(v) else None
+
+
+def _between(v, lo, hi):
+    v = _num(v)
+    return v if v is not None and lo < v < hi else None
+
+
+def _word(v, n=32):
+    return (v.strip()[:n] or None) if isinstance(v, str) else None
+
+
 REALTIME = 0x13          # sensor array byte 3: a real-time report. Anything else is an empty/idle block.
 _NAN = re.compile(r'(?<=[:\[,])\s*-?(nan|inf)\b')
 # Firmware 2.6.2 sometimes writes raw garbage (including stray quotes) into the sensor version strings.
@@ -87,10 +118,15 @@ def parse_status(topic: str, payload: bytes, ts: float) -> tuple[str, BedFrame] 
             hr, br = arr[15], arr[16]
             sf.hr = hr if 0 < hr < 255 and sf.status not in (3, 5, 1, 255) else None
             sf.br = br if 0 < br < 255 and sf.status not in (2, 5, 1, 255) else None
+        n = sensor[-1]
+        sf.powered = _flag(get("sensors", f"poweredSensor{n}"))
+        sf.fw_version = clean_version(get("sensors", f"sensor{n}FirmwareVersion"))
+        sf.hw_version = clean_version(get("sensors", f"sensor{n}HardwareVersion"))
+        sf.algo_version = clean_version(get("sensors", f"sensor{n}AlgorithmVersion"))
         m = _num(get("temps", f"ib_{side}"))
         zones[side] = ZoneFrame(on=_bool(get("tec", side, "control_enabled")), setpoint_c=_num(get("tec", side, "setpoint")),
                                 measured_c=m if m is not None and m > 1 else None,     # 0.00 while booting
-                                sensor=sf)
+                                sensor=sf, inlet_c=_between(get("temps", f"ib_{side}_in"), 1, 100))
     rgb = tuple(_num(get("led", f"idle_{c}")) for c in "rgb")
     errors = get("errors")
     frame = BedFrame(
@@ -102,6 +138,8 @@ def parse_status(topic: str, payload: bytes, ts: float) -> tuple[str, BedFrame] 
         rgb=rgb if all(v is not None for v in rgb) else None,  # type: ignore[arg-type]
         fault=any(bool(v) for v in errors.values()) if isinstance(errors, dict) and errors else None,
         hub=parse_hub(raw),
+        light_on=_flag(get("led", "led_state")),
+        light_blinking=_flag(get("led", "blink_enabled")),
     )
     return parts[1], frame
 
@@ -118,6 +156,15 @@ ZONE_FAULTS = {"RTEC_FAULT_DETECTED": "right", "LTEC_FAULT_DETECTED": "left"}
 # The only water value seen on a healthy unit is 1. What other values mean is NOT confirmed (0 is presumably "low",
 # but that has never been observed), so anything other than 1 is reported as "check the water", never as a specific fault.
 WATER_NORMAL = 1
+
+
+def fault_for(flag: str) -> tuple[str, str | None]:
+    """The (generic fault code, zone) pair for one of the unit's fault flag names."""
+    if flag in FAULT_CODES:
+        return FAULT_CODES[flag], None
+    if flag in ZONE_FAULTS:
+        return "zone_fault", ZONE_FAULTS[flag]
+    return "unknown", None
 
 
 def parse_hub(raw: dict) -> HubHealth:
@@ -142,14 +189,8 @@ def parse_hub(raw: dict) -> HubHealth:
     errors = get("errors")
     if isinstance(errors, dict):
         for name, v in errors.items():
-            if not v:
-                continue
-            if name in FAULT_CODES:
-                t.faults.append((FAULT_CODES[name], None))
-            elif name in ZONE_FAULTS:
-                t.faults.append(("zone_fault", ZONE_FAULTS[name]))
-            else:
-                t.faults.append(("unknown", None))
+            if v:
+                t.faults.append(fault_for(name))
     for key, code, zone in (("ptc_ok", "power", None), ("rtec_ok", "zone_fault", "right"), ("ltec_ok", "zone_fault", "left")):
         if _bool(raw.get(key)) is False and (code, zone) not in t.faults:
             t.faults.append((code, zone))
@@ -172,6 +213,28 @@ def parse_hub(raw: dict) -> HubHealth:
     t.fan_pwm = int(pwm) if pwm is not None else None
     hum = _num(get("ambient", "humidity_filtered"))
     t.humidity = round(hum, 1) if hum is not None else None
+    t.internal_c = _between(get("temps", "cb_filtered"), 1, 100)        # 0.00 or nan while booting
+    for axis in ("x", "y", "z"):
+        a = _num(get("angles", f"angle_{axis}_filtered"))
+        if a is not None and -180 <= a <= 180:
+            t.tilt[axis] = a
+    t.fan_on = _flag(get("fans", "enabled"))
+    target = _num(get("fans", "target_pwm"))
+    t.fan_target_pwm = int(target) if target is not None and 0 <= target <= 100 else None
+    for side, pump in (("left", "lpump"), ("right", "rpump")):
+        on = _flag(get("actuators", pump))
+        if on is not None:
+            t.pump_on[side] = on
+        state = _word(get("pumps", side, "status"))
+        if state is not None:
+            t.pump_state[side] = state
+        load = _num(get("pumps", side, "filtered"))
+        if load is not None:
+            t.pump_load[side] = round(load, 2)
+    t.air_valve_open = _flag(get("actuators", "airvalve"))
+    t.fill_valve_open = _flag(get("actuators", "fillvalve"))
+    t.filling = _flag(raw.get("filling_with_pumps_on"))
+    t.setup_mode = _flag(raw.get("ble_provisioning"))
     return t
 
 
@@ -225,6 +288,8 @@ class OrionMqtt:
         self._fails: dict[str, tuple[str, float, int]] = {}      # zone -> (command, don't resend before, attempts)
         self.sent: tuple[str, float] | None = None               # last command we published, and when
         self.acked: bool | None = None                           # did the unit report receiving it (None = no command yet)
+        self._last_sensor: dict[str, tuple[float, tuple]] = {}   # side -> (when, the last real block's readings)
+        self._versions: dict[tuple[str, str], str] = {}          # (side, field) -> last good pad-sensor version
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run())
@@ -288,14 +353,22 @@ class OrionMqtt:
 
     def _hold_sensors(self, frame: BedFrame) -> BedFrame:
         """The bed interleaves empty sensor blocks between real reports. Keep the last real report for up to 10 s,
-        so presence doesn't flicker to "unknown"; after that the side really has gone quiet."""
-        held = getattr(self, "_last_sensor", {})
+        so presence doesn't flicker to "unknown"; after that the side really has gone quiet.
+        The pad sensors' version strings arrive in only some messages (the message repair blanks them), so the last
+        good one is kept for as long as the driver runs. Values are copied into the new frame's own SensorFrame; the
+        held values are never shared with a frame."""
         for side, z in frame.zones.items():
-            if z.sensor.status is not None:
-                held[side] = (frame.ts, z.sensor)
-            elif side in held and frame.ts - held[side][0] <= 10:
-                z.sensor = held[side][1]
-        self._last_sensor = held
+            s = z.sensor
+            if s.status is not None:
+                self._last_sensor[side] = (frame.ts, (s.status, s.hr, s.br, s.clock))
+            elif side in self._last_sensor and frame.ts - self._last_sensor[side][0] <= 10:
+                s.status, s.hr, s.br, s.clock = self._last_sensor[side][1]
+            for name in ("fw_version", "hw_version", "algo_version"):
+                v = getattr(s, name)
+                if v is not None:
+                    self._versions[(side, name)] = v
+                elif (side, name) in self._versions:
+                    setattr(s, name, self._versions[(side, name)])
         return frame
 
     async def _publish(self, cmd: str) -> None:
