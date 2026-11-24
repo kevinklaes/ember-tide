@@ -48,6 +48,73 @@ Paths: dotted with list indexes, e.g. `data.readings`, `$.items[0].bpm`. Metrics
 `body_temp`, `resp_rate`, `spo2`, `resting_hr`, `temp_dev`, `readiness`, `weight_kg`, `steps`, `active_kcal`,
 `exercise_min`, `caffeine_mg`.
 
+## Home Assistant entities
+
+Ember & Tide sends Home Assistant one of two sets of entities. The owner chooses in Studio → Integrations → Home
+Assistant, under "What Ember & Tide shows in Home Assistant": **Basic** (the default) or **All sensors**. The choice
+applies at once, without reconnecting, and works whether the broker was set in Studio or by `ET_HA_MQTT_URL`.
+`ET_HA_SENSORS` sets the starting choice until the owner picks one ([configuration.md](configuration.md)).
+
+### Basic
+
+- Each person's side: `climate.embertide_<name>`, its flash, pause and "how it feels" buttons, and the sensors
+  `embertide_<name>_phase`, `_next_change`, `_flash_end`, `_plan`, `_tonight`, `_in_bed` and more, plus
+  `number.embertide_<name>_<phase>_temp`. What each one does is in [Talk to your bed](voice.md#what-ember--tide-puts-in-home-assistant).
+- The bed: `binary_sensor.embertide_leak_hold`, `sensor.embertide_<zone>_guest` for each side, and for each care job
+  `sensor.embertide_care_<job>_days` and `button.embertide_care_<job>_done`.
+
+### All sensors
+
+Basic, plus everything the bed's hub reports, as read-only entities on the "Ember & Tide · Bed" device. None of them
+accepts a command. An entity appears only if the bed can report it: the "Appears when" column says what that takes.
+"Once reported" means it appears the first time the hub sends that reading and then stays, also after a restart.
+
+`<zone>` is each side of the bed (`left`, `right`). `<side>` is each side the hub reports a fan speed for. `<k>` is each
+raw water reading the hub sends, by the hub's own name (at most 8).
+
+| Entity | What it is | Unit | Appears when |
+|---|---|---|---|
+| `binary_sensor.embertide_hub_problem` | On when the hub needs attention. Its attributes are the status line and the faults (name, code, side) in the app's words | | the hub reports its health, or a fault |
+| `sensor.embertide_hub_status` | The hub's status line, for example "All good" | | the hub reports its health |
+| `binary_sensor.embertide_hub_water_problem` | On when the water is low | | the hub reports water, once reported |
+| `sensor.embertide_hub_water_<k>` | One raw water reading, the hub's own number | | the hub reports water, once reported |
+| `binary_sensor.embertide_hub_safety` | On when the hub's safety check fails | | the hub reports its health, once reported |
+| `sensor.embertide_hub_fan_<side>_rpm` | Fan speed for one side | rpm | the hub reports its health, once reported |
+| `sensor.embertide_hub_fan_power` | Fan power | % | the hub reports its health, once reported |
+| `binary_sensor.embertide_hub_quiet_fan` | Quiet fan mode | | the bed has a quiet fan, once reported |
+| `sensor.embertide_hub_humidity` | Room humidity | % | the hub reports its health, once reported |
+| `sensor.embertide_hub_room_temperature` | Room temperature | °C | the hub reports its health, once reported |
+| `sensor.embertide_hub_wifi_signal` | The hub's Wi-Fi signal | dBm | the hub reports its health, once reported |
+| `sensor.embertide_hub_last_restart` | When the hub last started | time | the hub reports its health, once reported |
+| `sensor.embertide_hub_free_memory` | The hub's free memory | kB | the hub reports its health, once reported |
+| `sensor.embertide_hub_firmware` | Hub firmware version | | once reported |
+| `sensor.embertide_hub_firmware_build` | Hub firmware build | | the hub reports its health, once reported |
+| `sensor.embertide_hub_panel_firmware` | Light panel firmware version | | the hub reports its health, once reported |
+| `sensor.embertide_hub_last_command` | The last command the hub received | | the hub reports its health, once reported |
+| `binary_sensor.embertide_hub_online` | Whether the hub is answering | | always |
+| `sensor.embertide_hub_system_state` | The hub's own state word | | once reported |
+| `sensor.embertide_hub_light_brightness` | Light brightness | % | the bed has a dimmable light, once reported |
+| `sensor.embertide_hub_light_color` | Light colour, as `#rrggbb` | | the bed has a coloured light, once reported |
+| `sensor.embertide_hub_<zone>_temperature` | The pad's measured temperature | °C | the bed measures pad temperature |
+| `sensor.embertide_hub_<zone>_setpoint` | The temperature the pad is set to | °C | the bed has per-side temperatures |
+| `binary_sensor.embertide_hub_<zone>_power` | Whether the pad is on | | the bed has per-side power |
+| `sensor.embertide_hub_<zone>_sensor_state` | The pad sensor's state, for example "in bed" or "empty" | | the bed has a pad sensor |
+| `sensor.embertide_hub_<zone>_heart_rate` | Heart rate on that side | bpm | the bed measures heart rate |
+| `sensor.embertide_hub_<zone>_breathing_rate` | Breathing rate on that side | br/min | the bed measures breathing rate |
+
+Things to know:
+
+- **Your network's name and address are never sent**, at either level.
+- **Heart rate and breathing rate become visible to anyone who can see your Home Assistant.** They are per side of the
+  bed, as the hub measures them, not per person.
+- **Numbers update at most every 30 seconds** per entity (temperatures, rates, humidity, fan, signal, memory,
+  brightness, water readings), and only when they change. On/off and text entities update at once.
+- **While the hub is offline every entity reads unknown**, except `binary_sensor.embertide_hub_online`, which reads off.
+- **The raw water readings are the hub's own numbers.** What each one means has not been confirmed; use
+  `binary_sensor.embertide_hub_water_problem` for "the water is low".
+- Switching back to **Basic** removes the extra entities from Home Assistant and clears their last values from the
+  broker. If the switch is made while Home Assistant is not connected, they are removed when it next connects.
+
 ## Without Home Assistant: openHAB, Node-RED, Homey and others
 
 Home Assistant gets entities by MQTT discovery, but the same MQTT topics and the HTTP paths work for any system that
@@ -59,7 +126,9 @@ speaks MQTT or HTTP. Point `ET_HA_MQTT_URL` (or Studio, Integrations) at your br
 in `/api/snapshot` (for example `p1`), and these topics under `embertide/<person id>/`: `mode` (`off` or `heat_cool`),
 `target` and `measured` (in the person's unit), `action` (`heating`, `cooling`, `idle`, `off`), `phase`, `next` (timestamp),
 `in_bed` (`ON`/`OFF`), `flash_end`, `checkin`, `plan`, `tonight`. The bridge's own availability is `embertide/status`
-(`online`/`offline`; it is the last-will topic, so a dead server shows as offline).
+(`online`/`offline`; it is the last-will topic, so a dead server shows as offline). With All sensors on (above), the hub's
+readings are also on `embertide/bed/hub/<key>`, where `<key>` is the end of the entity id after `embertide_hub_` (for
+example `embertide/bed/hub/humidity`, `embertide/bed/hub/left_heart_rate`); `None` means unknown.
 
 **Sending commands.** Publish a plain payload to `embertide/<person id>/set/<what>`:
 

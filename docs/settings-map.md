@@ -64,6 +64,7 @@ screens/SettingsSleep.tsx) so the two always use the same words and limits.
 | `pets_ignore` | Same pets editor ("Ignore readings that look like a pet") | Owner |
 | `guest` (GuestSide: on, temperature, turn off after they get up, ends, dial screen) | Studio → Guest mode (all); Phone (Guest mode: side, temperature, turn-off; end); Tonight guest card (on/off, temperature) | Owner (guest card: whoever can see it) |
 | bed orientation (`bed_from_foot`, kv) | Studio → People & access (Sides of the bed), Phone (My side of the bed) | Owner |
+| Home Assistant sensors: Basic / All sensors (`sensors` in the `ha_bridge` record, kv; `ET_HA_SENSORS` is the default until chosen) | Studio → Integrations → Home Assistant ("What Ember & Tide shows in Home Assistant") | Owner |
 | `room_c_default`, `bed_min_c`, `bed_max_c`, `user_min_c`, `user_max_c` | Not settings: fixed safety limits of the bed (room default is unused) | — |
 
 ## Devices and calibration (sources.py)

@@ -728,3 +728,18 @@ async def test_no_command_topics_for_the_hub(tmp_path):
         assert await b.handle(topic, "50") is None
     assert (n.bed.brightness, n.bed.rgb, n.bed.quiet) == before
     assert not any("command_topic" in e.config for e in b._extras_now())
+
+
+# ---------- T-24: the docs list every entity ----------
+DOCS = __import__("pathlib").Path(__file__).resolve().parents[2] / "docs"
+
+
+def test_the_docs_list_every_entity_and_the_setting():
+    text = (DOCS / "integrations.md").read_text(encoding="utf-8")
+    fixed = [hs.entity_id(s.domain, s.key) for s in hs.FIXED]
+    assert len(fixed) == len(PINNED_FIXED)
+    per_side = [hs.entity_id(s.domain, s.key.replace("left", "<zone>", 1)) for s in hs.zone_specs("left")]
+    patterns = per_side + ["sensor.embertide_hub_fan_<side>_rpm", "sensor.embertide_hub_water_<k>"]
+    missing = [e for e in fixed + patterns if f"`{e}`" not in text]
+    assert not missing, f"docs/integrations.md does not list: {missing}"
+    assert "ET_HA_SENSORS" in (DOCS / "configuration.md").read_text(encoding="utf-8")

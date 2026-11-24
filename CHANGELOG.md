@@ -5,6 +5,13 @@ minor versions, and each entry says what to check when upgrading.
 
 ## Unreleased
 
+- **More of the bed in Home Assistant, if you want it.** Studio → Integrations → Home Assistant has a new choice:
+  **Basic** sends what it always has (each person's side and the bed's care jobs); **All sensors** adds everything
+  the hub reports, read-only: fans, faults, water, room humidity, Wi-Fi signal, versions, the light, and each pad's
+  temperature, heart rate and breathing rate. Nothing changes until the owner chooses. Your network's name and
+  address are never sent. `ET_HA_SENSORS=all` makes All sensors the starting choice. The entity list is in
+  docs/integrations.md.
+
 ## 0.1.21
 
 The night review opens on the night that just ended. Update the server; the apps need no changes for this one.
