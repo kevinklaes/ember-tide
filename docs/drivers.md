@@ -59,6 +59,10 @@ signal from the bed), `BIO_HR` and `BIO_BR` (heart and breathing rate), `LED_RGB
   none. `SensorFrame.clock` is an opaque token that must change while the sensor is alive (a frozen sensor is detected by it).
 - `hub`: optional `HubHealth` (water, faults, Wi-Fi, firmware) for beds with a control unit. Translate vendor flags into the
   generic fault codes in `hub.py`.
+- The frames also have further optional readings (the hub's internal temperature, tilt, pumps and valves, the light's
+  state, the model, each side's second temperature and heating state, each pad sensor's power, health and versions),
+  listed with a one-line comment each in `drivers/base.py`. Leave any your bed does not have unset: an unset reading is
+  simply not shown.
 
 Safety limits live in the engine (every write passes them), so a driver just does what it is asked, but it should still
 reject values the hardware cannot take.

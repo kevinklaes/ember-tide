@@ -69,8 +69,12 @@ Basic, plus everything the bed's hub reports, as read-only entities on the "Embe
 accepts a command. An entity appears only if the bed can report it: the "Appears when" column says what that takes.
 "Once reported" means it appears the first time the hub sends that reading and then stays, also after a restart.
 
-`<zone>` is each side of the bed (`left`, `right`). `<side>` is each side the hub reports a fan speed for. `<k>` is each
-raw water reading the hub sends, by the hub's own name (at most 8).
+`<zone>` is each side of the bed (`left`, `right`). `<side>` is each side the hub reports a fan speed for (at most 4),
+or, in the pump entities, each water pump the hub reports, by side (at most 4). `<k>` is each raw water reading the hub
+sends, by the hub's own name (at most 8). `<axis>` is each axis the hub reports its tilt on (`x`, `y`, `z`; at most 3).
+
+Some readings come only from one way of reaching the bed: "local" is the bed through your own MQTT broker
+(`orion-mqtt`), "cloud" is the maker's cloud API (`orion-cloud`); see [drivers.md](drivers.md).
 
 | Entity | What it is | Unit | Appears when |
 |---|---|---|---|
@@ -95,23 +99,58 @@ raw water reading the hub sends, by the hub's own name (at most 8).
 | `sensor.embertide_hub_system_state` | The hub's own state word | | once reported |
 | `sensor.embertide_hub_light_brightness` | Light brightness | % | the bed has a dimmable light, once reported |
 | `sensor.embertide_hub_light_color` | Light colour, as `#rrggbb` | | the bed has a coloured light, once reported |
+| `sensor.embertide_hub_internal_temperature` | The hub's own internal temperature | °C | the hub reports its health, once reported (local) |
+| `binary_sensor.embertide_hub_fan_running` | Whether the hub's fan is switched on | | the hub reports its health, once reported (local) |
+| `sensor.embertide_hub_fan_target_power` | The fan power the hub is aiming for | % | the hub reports its health, once reported (local) |
+| `binary_sensor.embertide_hub_air_valve` | Whether the air valve is open | | the hub reports its health, once reported (local) |
+| `binary_sensor.embertide_hub_fill_valve` | Whether the fill valve is open | | the hub reports its health, once reported (local) |
+| `binary_sensor.embertide_hub_fill_in_progress` | Whether the hub is filling with water | | the hub reports its health, once reported (local and cloud) |
+| `binary_sensor.embertide_hub_light_on` | Whether the hub's light is lit | | the bed has a dimmable light, once reported (local) |
+| `binary_sensor.embertide_hub_light_blinking` | Whether the hub's light is blinking | | the bed has a dimmable light, once reported (local) |
+| `binary_sensor.embertide_hub_setup_mode` | Whether the hub is in its wireless setup mode | | the hub reports its health, once reported (local) |
+| `sensor.embertide_hub_model` | The hub's model name | | once reported (cloud) |
+| `sensor.embertide_hub_fill_state` | The water state, in the maker's own word | | the hub reports its health, once reported (cloud) |
+| `binary_sensor.embertide_hub_update_available` | On when the maker has a firmware update waiting | | the hub reports its health, once reported (cloud) |
+| `binary_sensor.embertide_hub_updating` | On while a firmware update is running | | the hub reports its health, once reported (cloud) |
+| `sensor.embertide_hub_tilt_<axis>` | How far the hub leans on one axis | ° | the hub reports its health, once reported (local) |
+| `binary_sensor.embertide_hub_pump_<side>_running` | Whether that water pump is running | | the hub reports its health, once reported (local) |
+| `sensor.embertide_hub_pump_<side>_state` | That pump's state, in the hub's own word | | the hub reports its health, once reported (local) |
+| `sensor.embertide_hub_pump_<side>_load` | That pump's smoothed load, the hub's own number (two decimals) | | the hub reports its health, once reported (local) |
 | `sensor.embertide_hub_<zone>_temperature` | The pad's measured temperature | °C | the bed measures pad temperature |
 | `sensor.embertide_hub_<zone>_setpoint` | The temperature the pad is set to | °C | the bed has per-side temperatures |
 | `binary_sensor.embertide_hub_<zone>_power` | Whether the pad is on | | the bed has per-side power |
 | `sensor.embertide_hub_<zone>_sensor_state` | The pad sensor's state, for example "in bed" or "empty" | | the bed has a pad sensor |
 | `sensor.embertide_hub_<zone>_heart_rate` | Heart rate on that side | bpm | the bed measures heart rate |
 | `sensor.embertide_hub_<zone>_breathing_rate` | Breathing rate on that side | br/min | the bed measures breathing rate |
+| `sensor.embertide_hub_<zone>_inlet_temperature` | The side's second temperature reading, the hub's own value | °C | the bed measures pad temperature, once reported (local) |
+| `sensor.embertide_hub_<zone>_thermal_state` | Whether that side is heating, cooling or standing by, in the maker's own word | | the bed has per-side temperatures, once reported (cloud) |
+| `binary_sensor.embertide_hub_<zone>_sensor_powered` | Whether that side's pad sensor has power | | the bed has a pad sensor, once reported (local) |
+| `binary_sensor.embertide_hub_<zone>_sensor_problem` | On when the maker says that side's pad sensor is not working | | the bed has a pad sensor, once reported (cloud) |
+| `sensor.embertide_hub_<zone>_sensor_firmware` | That pad sensor's firmware version | | the bed has a pad sensor, once reported (local and cloud) |
+| `sensor.embertide_hub_<zone>_sensor_hardware` | That pad sensor's hardware version | | the bed has a pad sensor, once reported (local and cloud) |
+| `sensor.embertide_hub_<zone>_sensor_algorithm` | That pad sensor's algorithm version | | the bed has a pad sensor, once reported (local) |
+
+A bed on the cloud connection now reports its health too, as the maker's API is documented by the community: the hub's
+connection, firmware and light panel firmware, Wi-Fi signal, last restart, safety check and faults. So
+`binary_sensor.embertide_hub_problem`, `sensor.embertide_hub_status`, `binary_sensor.embertide_hub_safety`,
+`sensor.embertide_hub_wifi_signal`, `sensor.embertide_hub_last_restart` and `sensor.embertide_hub_panel_firmware`
+appear for it as well, and `binary_sensor.embertide_hub_online` goes off when the cloud says the hub is unreachable.
 
 Things to know:
 
-- **Your network's name and address are never sent**, at either level.
+- **Your network's name and address, and the hub's hardware address and serial number, are never sent**, at either
+  level.
 - **Heart rate and breathing rate become visible to anyone who can see your Home Assistant.** They are per side of the
   bed, as the hub measures them, not per person.
-- **Numbers update at most every 30 seconds** per entity (temperatures, rates, humidity, fan, signal, memory,
-  brightness, water readings), and only when they change. On/off and text entities update at once.
+- **Numbers update at most every 30 seconds** per entity (temperatures, including the hub's internal and each side's
+  inlet temperature, rates, humidity, fan and fan target, signal, memory, brightness, water readings, tilt, pump load),
+  and only when they change. On/off and text entities update at once.
 - **While the hub is offline every entity reads unknown**, except `binary_sensor.embertide_hub_online`, which reads off.
 - **The raw water readings are the hub's own numbers.** What each one means has not been confirmed; use
   `binary_sensor.embertide_hub_water_problem` for "the water is low".
+- **Some hub readings are the hub's own values whose exact meaning has not been confirmed**: each side's inlet
+  temperature, the pump load and state, the tilt, the air and fill valve states, and the fill readings. They are shown
+  as the hub sends them.
 - Switching back to **Basic** removes the extra entities from Home Assistant and clears their last values from the
   broker. If the switch is made while Home Assistant is not connected, they are removed when it next connects.
 
